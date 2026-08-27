@@ -1,11 +1,11 @@
 # A Simple Autoclicker
 
-A lightweight GTK4/libadwaita autoclicker for Linux. It can repeat mouse clicks
-or recorded keyboard actions, stop after a duration or action count, target a
-fixed screen position, save presets, and remain available from the system tray.
+A lightweight autoclicker for Linux and Windows. It can repeat mouse clicks or
+recorded keyboard actions, stop after a duration or action count, target a fixed
+screen position, save presets, and remain available from the system tray.
 
-> **Platform status:** the current release targets X11. Wayland and Windows are
-> not supported yet.
+> **Platform status:** Linux uses GTK4/libadwaita and currently requires X11.
+> Windows uses a native Win32 interface and supports 64-bit Windows 10 and 11.
 
 ## Features
 
@@ -17,7 +17,20 @@ fixed screen position, save presets, and remain available from the system tray.
 - Configurable F6–F12 global start/stop hotkey
 - Named presets saved between launches
 - System tray controls for showing, starting, stopping, and quitting the app
-- Native GTK4/libadwaita interface
+- Native interface on both GTK4/libadwaita (Linux) and Win32 (Windows)
+
+## Install on Windows
+
+Download `A-Simple-Autoclicker-Setup-VERSION-x64.exe` from the latest GitHub
+release and run it. The installer adds Start menu and optional desktop shortcuts.
+
+The release also contains `A-Simple-Autoclicker-Windows-x64.zip` for portable
+use. Extract it and run `a-simple-autoclicker.exe`; no installation is needed.
+
+Windows may show a SmartScreen warning until published builds are digitally
+signed and have established reputation. Only download releases from this
+repository. Some programs running as administrator only accept simulated input
+from an autoclicker that is also running as administrator.
 
 ## Install on Debian, Ubuntu, or Linux Mint
 
@@ -43,6 +56,8 @@ sudo apt remove a-simple-autoclicker
 
 ## Build and run from source
 
+### Linux
+
 Install the development dependencies:
 
 ```bash
@@ -64,6 +79,18 @@ cargo build --release
 ```
 
 The resulting executable is `target/release/a-simple-autoclicker`.
+
+### Windows
+
+Install [Rust](https://rustup.rs/), clone the repository, open PowerShell in the
+project directory, and run:
+
+```powershell
+.\scripts\build-windows.ps1
+```
+
+The portable ZIP is written to `dist\A-Simple-Autoclicker-Windows-x64.zip`.
+Tagged GitHub builds also create a Setup executable automatically.
 
 ## Build a Debian package
 
@@ -95,7 +122,7 @@ applications difficult to control.
 ## Presets and configuration
 
 Named presets include the repeated action, interval, limits, fixed position, and
-global hotkey. They are stored at:
+global hotkey. On Linux they are stored at:
 
 ```text
 ~/.config/a-simple-autoclicker/presets.json
@@ -104,26 +131,35 @@ global hotkey. They are stored at:
 Presets created by older development builds under
 `~/.config/mint-autoclicker/presets.json` are read automatically.
 
+On Windows, presets are stored under
+`%APPDATA%\A Simple Autoclicker\presets.json`.
+
 ## Project structure
 
 - `src/app.rs` — GTK/libadwaita interface
+- `src/windows_app.rs` — native Windows interface, tray, and global hotkey
 - `src/clicker.rs` — timing, action-count limits, and worker state
 - `src/model.rs` — shared actions, hotkeys, modifiers, and positions
 - `src/backend/x11.rs` — X11/XTest input simulation and pointer capture
+- `src/backend/windows.rs` — Windows input simulation and pointer capture
 - `src/hotkey.rs` — X11 global hotkey handling
 - `src/presets.rs` — JSON preset persistence
 - `src/tray.rs` — StatusNotifier system tray integration
 - `scripts/build-deb.sh` — Debian package builder
+- `scripts/build-windows.ps1` — local portable Windows builder
+- `.github/workflows/windows-release.yml` — Windows installer/release automation
 
-The UI and click engine are separated from the X11 backend so future Wayland and
-Windows implementations can reuse most of the application.
+The platform interfaces and input backends are separated from the shared click
+engine, models, limits, and preset storage. This keeps future Wayland support
+independent from the working X11 and Windows implementations.
 
 ## Limitations
 
-- X11 is required; behavior through XWayland is not supported or guaranteed.
+- Linux requires X11; behavior through XWayland is not supported or guaranteed.
 - The recorded action cannot be the same key as the global toggle hotkey.
 - Another application may already own a selected global hotkey.
 - The tray icon requires a desktop panel that supports StatusNotifier items.
+- Unsigned Windows downloads can trigger a Microsoft Defender SmartScreen prompt.
 
 ## Contributing
 

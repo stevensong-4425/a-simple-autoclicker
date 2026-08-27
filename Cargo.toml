@@ -3,19 +3,29 @@ name = "a-simple-autoclicker"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
-description = "A simple X11-first GTK4/libadwaita autoclicker"
+description = "A simple cross-platform desktop autoclicker"
 license = "MIT"
 
 [dependencies]
+serde = { version = "=1.0.217", features = ["derive"] }
+serde_json = "=1.0.138"
+
+[target.'cfg(target_os = "linux")'.dependencies]
 adw = { package = "libadwaita", version = "0.6", features = ["v1_4"] }
 dbus = { version = "0.9", features = ["vendored"] }
 gtk = { package = "gtk4", version = "0.8", features = ["v4_10"] }
 libloading = "0.8"
 ksni = "=0.2.2"
-serde = { version = "=1.0.217", features = ["derive"] }
-serde_json = "=1.0.138"
 
-[build-dependencies]
+[target.'cfg(target_os = "windows")'.dependencies]
+native-windows-gui = { version = "=1.0.13", features = ["animation-timer", "combobox", "menu", "message-window", "tray-notification"] }
+windows-sys = { version = "=0.59.0", features = [
+    "Win32_Foundation",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(target_os = "linux")'.build-dependencies]
 # ksni 0.2 uses D-Bus code generation at build time. Enable the same vendored
 # native library in Cargo's separate build-dependency graph.
 dbus = { version = "0.9", features = ["vendored"] }

@@ -56,6 +56,7 @@ impl ClickEngine {
         self.active.store(active, Ordering::Release);
     }
 
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
     pub fn toggle(&self) {
         let was_active = self.active.fetch_xor(true, Ordering::AcqRel);
         if !was_active {

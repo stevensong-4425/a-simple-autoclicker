@@ -87,6 +87,16 @@ impl PresetStore {
         fs::write(path, contents).map_err(|error| error.to_string())
     }
 
+    #[cfg(target_os = "windows")]
+    fn path() -> PathBuf {
+        env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("A Simple Autoclicker")
+            .join("presets.json")
+    }
+
+    #[cfg(not(target_os = "windows"))]
     fn path() -> PathBuf {
         let base = env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
@@ -95,6 +105,12 @@ impl PresetStore {
         base.join("a-simple-autoclicker").join("presets.json")
     }
 
+    #[cfg(target_os = "windows")]
+    fn legacy_path() -> PathBuf {
+        PathBuf::from("__no_legacy_windows_preset_file__")
+    }
+
+    #[cfg(not(target_os = "windows"))]
     fn legacy_path() -> PathBuf {
         let base = env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)

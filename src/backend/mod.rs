@@ -1,3 +1,5 @@
+#[cfg(target_os = "windows")]
+mod windows;
 #[cfg(target_os = "linux")]
 mod x11;
 
@@ -13,6 +15,11 @@ pub fn pointer_position() -> Result<ClickPosition, String> {
         return x11::pointer_position();
     }
 
+    #[cfg(target_os = "windows")]
+    {
+        return windows::pointer_position();
+    }
+
     #[allow(unreachable_code)]
     Err("Pointer capture is not available on this platform yet".into())
 }
@@ -21,6 +28,11 @@ pub fn create() -> Result<Box<dyn InputBackend>, String> {
     #[cfg(target_os = "linux")]
     {
         return x11::X11Backend::new().map(|backend| Box::new(backend) as Box<dyn InputBackend>);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return Ok(Box::new(windows::WindowsBackend));
     }
 
     #[allow(unreachable_code)]

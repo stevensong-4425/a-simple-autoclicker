@@ -49,6 +49,7 @@ impl Hotkey {
 
     pub const LABELS: [&'static str; 7] = ["F6", "F7", "F8", "F9", "F10", "F11", "F12"];
 
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
     pub fn keysym(self) -> u64 {
         match self {
             Self::F6 => 0xffc3,
@@ -58,6 +59,19 @@ impl Hotkey {
             Self::F10 => 0xffc7,
             Self::F11 => 0xffc8,
             Self::F12 => 0xffc9,
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    pub fn virtual_key(self) -> u32 {
+        match self {
+            Self::F6 => 0x75,
+            Self::F7 => 0x76,
+            Self::F8 => 0x77,
+            Self::F9 => 0x78,
+            Self::F10 => 0x79,
+            Self::F11 => 0x7a,
+            Self::F12 => 0x7b,
         }
     }
 }
