@@ -54,56 +54,6 @@ Remove it with:
 sudo apt remove a-simple-autoclicker
 ```
 
-## Build and run from source
-
-### Linux
-
-Install the development dependencies:
-
-```bash
-sudo apt update
-sudo apt install build-essential cargo libadwaita-1-dev libgtk-4-dev \
-  libx11-dev libxtst-dev pkg-config rustc
-```
-
-Clone or download this repository, enter its directory, and run:
-
-```bash
-cargo run
-```
-
-Build an optimized binary with:
-
-```bash
-cargo build --release
-```
-
-The resulting executable is `target/release/a-simple-autoclicker`.
-
-### Windows
-
-Install [Rust](https://rustup.rs/), clone the repository, open PowerShell in the
-project directory, and run:
-
-```powershell
-.\scripts\build-windows.ps1
-```
-
-The portable ZIP is written to `dist\A-Simple-Autoclicker-Windows-x64.zip`.
-Tagged GitHub builds also create a Setup executable automatically.
-
-## Build a Debian package
-
-The package builder compiles a release binary and creates an installable package
-under `dist/`:
-
-```bash
-./scripts/build-deb.sh
-sudo apt install ./dist/a-simple-autoclicker_0.1.0_amd64.deb
-```
-
-The script automatically reads the version from `Cargo.toml` and the architecture
-from `dpkg`, so future versions use the appropriate output filename.
 
 ## Usage
 
@@ -134,24 +84,7 @@ Presets created by older development builds under
 On Windows, presets are stored under
 `%APPDATA%\A Simple Autoclicker\presets.json`.
 
-## Project structure
 
-- `src/app.rs` — GTK/libadwaita interface
-- `src/windows_app.rs` — native Windows interface, tray, and global hotkey
-- `src/clicker.rs` — timing, action-count limits, and worker state
-- `src/model.rs` — shared actions, hotkeys, modifiers, and positions
-- `src/backend/x11.rs` — X11/XTest input simulation and pointer capture
-- `src/backend/windows.rs` — Windows input simulation and pointer capture
-- `src/hotkey.rs` — X11 global hotkey handling
-- `src/presets.rs` — JSON preset persistence
-- `src/tray.rs` — StatusNotifier system tray integration
-- `scripts/build-deb.sh` — Debian package builder
-- `scripts/build-windows.ps1` — local portable Windows builder
-- `.github/workflows/windows-release.yml` — Windows installer/release automation
-
-The platform interfaces and input backends are separated from the shared click
-engine, models, limits, and preset storage. This keeps future Wayland support
-independent from the working X11 and Windows implementations.
 
 ## Limitations
 
@@ -161,16 +94,7 @@ independent from the working X11 and Windows implementations.
 - The tray icon requires a desktop panel that supports StatusNotifier items.
 - Unsigned Windows downloads can trigger a Microsoft Defender SmartScreen prompt.
 
-## Contributing
-
-Issues and pull requests are welcome. Before submitting changes, run:
-
-```bash
-cargo test
-cargo clippy -- -D warnings
-```
-
-Please keep platform-specific input code inside `src/backend/` where possible.
+m-specific input code inside `src/backend/` where possible.
 
 ## License
 
