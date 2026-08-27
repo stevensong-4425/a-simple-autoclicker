@@ -1,0 +1,10 @@
+Package: a-simple-autoclicker
+Version: @VERSION@
+Section: utils
+Priority: optional
+Architecture: @ARCH@
+Maintainer: Steven
+Depends: libadwaita-1-0, libgtk-4-1, libx11-6, libxtst6
+Description: Simple GTK autoclicker for Linux
+ Repeat mouse clicks or recorded keyboard actions with configurable intervals,
+ duration and action limits, fixed click positions, presets, and tray support.
