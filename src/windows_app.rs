@@ -71,7 +71,9 @@ struct App {
     status_label: nwg::Label,
     timer: nwg::AnimationTimer,
 
-    _icon: nwg::Icon,
+    idle_icon: nwg::Icon,
+    active_icon: nwg::Icon,
+    tray_active: Cell<bool>,
     tray: nwg::TrayNotification,
     tray_menu: nwg::Menu,
     tray_show: nwg::MenuItem,
@@ -287,16 +289,20 @@ impl App {
             .parent(&window)
             .build(&mut timer)?;
 
-        let mut icon = nwg::Icon::default();
+        let mut idle_icon = nwg::Icon::default();
         nwg::Icon::builder()
             .source_system(Some(nwg::OemIcon::WinLogo))
-            .build(&mut icon)?;
-        window.set_icon(Some(&icon));
+            .build(&mut idle_icon)?;
+        let mut active_icon = nwg::Icon::default();
+        nwg::Icon::builder()
+            .source_system(Some(nwg::OemIcon::Error))
+            .build(&mut active_icon)?;
+        window.set_icon(Some(&idle_icon));
 
         let mut tray = nwg::TrayNotification::default();
         nwg::TrayNotification::builder()
             .parent(&window)
-            .icon(Some(&icon))
+            .icon(Some(&idle_icon))
             .tip(Some(APP_TITLE))
             .build(&mut tray)?;
         let mut tray_menu = nwg::Menu::default();
@@ -345,7 +351,9 @@ impl App {
             start_button,
             status_label,
             timer,
-            _icon: icon,
+            idle_icon,
+            active_icon,
+            tray_active: Cell::new(false),
             tray,
             tray_menu,
             tray_show,
@@ -577,10 +585,19 @@ impl App {
             self.toggle_from_ui();
         }
         let hotkey = selected_hotkey(&self.hotkey_combo);
+        let active = self.engine.is_active();
+        if active != self.tray_active.get() {
+            self.tray_active.set(active);
+            self.tray.set_icon(if active {
+                &self.active_icon
+            } else {
+                &self.idle_icon
+            });
+        }
         if let Some(error) = self.engine.backend_error() {
             self.status_label.set_text(&format!("Input error: {error}"));
             self.start_button.set_text("Start");
-        } else if self.engine.is_active() {
+        } else if active {
             let time = self
                 .engine
                 .remaining_ms()
