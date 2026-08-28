@@ -47,8 +47,8 @@ pub fn run() -> Result<(), String> {
     };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([760.0, 900.0])
-            .with_min_inner_size([620.0, 700.0])
+            .with_inner_size([760.0, 820.0])
+            .with_min_inner_size([620.0, 560.0])
             .with_icon(viewport_icon),
         follow_system_theme: false,
         default_theme: eframe::Theme::Light,
@@ -827,7 +827,10 @@ fn configure_style(ctx: &egui::Context) {
 }
 
 fn group_heading(ui: &mut egui::Ui, title: &str) {
-    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+    // `with_layout` consumes all remaining vertical space. A horizontal row
+    // stays content-height, which keeps the settings card directly below its
+    // heading on short or display-scaled Windows screens.
+    ui.horizontal(|ui| {
         ui.label(RichText::new(title).size(20.0).strong().color(TEXT));
     });
     ui.add_space(7.0);
@@ -1210,7 +1213,7 @@ impl Drop for WindowsHotkeyThread {
 
 #[cfg(test)]
 mod tests {
-    use super::{duration_ms, format_duration, split_duration};
+    use super::{duration_ms, format_duration, group_heading, split_duration};
 
     #[test]
     fn duration_units_round_trip() {
@@ -1222,5 +1225,31 @@ mod tests {
     fn remaining_time_is_readable() {
         assert_eq!(format_duration(3_661_000), "1:01:01");
         assert_eq!(format_duration(9_001), "0:10");
+    }
+
+    #[test]
+    fn section_heading_does_not_consume_the_viewport_height() {
+        let context = eframe::egui::Context::default();
+        let input = eframe::egui::RawInput {
+            screen_rect: Some(eframe::egui::Rect::from_min_size(
+                eframe::egui::Pos2::ZERO,
+                eframe::egui::vec2(700.0, 700.0),
+            )),
+            ..Default::default()
+        };
+        let mut used_height = 0.0;
+
+        let _ = context.run(input, |context| {
+            eframe::egui::CentralPanel::default().show(context, |ui| {
+                let top = ui.cursor().top();
+                group_heading(ui, "Click settings");
+                used_height = ui.cursor().top() - top;
+            });
+        });
+
+        assert!(
+            used_height < 80.0,
+            "section heading unexpectedly used {used_height}px"
+        );
     }
 }
