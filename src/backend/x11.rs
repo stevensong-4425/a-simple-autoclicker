@@ -90,19 +90,28 @@ impl X11Backend {
     }
 
     fn click(&mut self, button: u32) -> Result<(), String> {
-        unsafe {
-            (self.fake_button)(self.display, button, 1, 0);
-            (self.fake_button)(self.display, button, 0, 0);
+        let (pressed, released) = unsafe {
+            let pressed = (self.fake_button)(self.display, button, 1, 0);
+            let released = (self.fake_button)(self.display, button, 0, 0);
             (self.flush)(self.display);
+            (pressed, released)
+        };
+        if pressed == 0 || released == 0 {
+            return Err("X11 rejected the simulated mouse click".into());
         }
         Ok(())
     }
 
-    fn move_to(&mut self, position: ClickPosition) {
-        unsafe {
-            (self.fake_motion)(self.display, -1, position.x, position.y, 0);
+    fn move_to(&mut self, position: ClickPosition) -> Result<(), String> {
+        let moved = unsafe {
+            let moved = (self.fake_motion)(self.display, -1, position.x, position.y, 0);
             (self.flush)(self.display);
+            moved
+        };
+        if moved == 0 {
+            return Err("X11 rejected the pointer movement".into());
         }
+        Ok(())
     }
 
     fn key_event(&mut self, keysym: u64, pressed: bool) -> Result<(), String> {
@@ -110,8 +119,9 @@ impl X11Backend {
         if keycode == 0 {
             return Err(format!("X11 could not map keysym {keysym:#x}"));
         }
-        unsafe {
-            (self.fake_key)(self.display, keycode, i32::from(pressed), 0);
+        let sent = unsafe { (self.fake_key)(self.display, keycode, i32::from(pressed), 0) };
+        if sent == 0 {
+            return Err("X11 rejected the simulated key event".into());
         }
         Ok(())
     }
@@ -150,7 +160,7 @@ impl InputBackend for X11Backend {
             Action::LeftClick | Action::MiddleClick | Action::RightClick
         ) {
             if let Some(position) = position {
-                self.move_to(position);
+                self.move_to(position)?;
             }
         }
         match action {

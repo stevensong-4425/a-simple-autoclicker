@@ -5,7 +5,7 @@ recorded keyboard actions, stop after a duration or action count, target a fixed
 screen position, save presets, and remain available from the system tray.
 
 > **Platform status:** Linux uses GTK4/libadwaita and currently requires X11.
-> Windows uses a native Win32 interface and supports 64-bit Windows 10 and 11.
+> Windows uses a modern DPI-aware interface and supports 64-bit Windows 10 and 11.
 
 ## Features
 
@@ -17,7 +17,7 @@ screen position, save presets, and remain available from the system tray.
 - Configurable F6–F12 global start/stop hotkey
 - Named presets saved between launches
 - System tray controls for showing, starting, stopping, and quitting the app
-- Native interface on both GTK4/libadwaita (Linux) and Win32 (Windows)
+- Modern interface on both GTK4/libadwaita (Linux) and Windows
 
 ## Install on Windows
 
@@ -99,7 +99,7 @@ under `dist/`:
 
 ```bash
 ./scripts/build-deb.sh
-sudo apt install ./dist/a-simple-autoclicker_0.1.1_amd64.deb
+sudo apt install ./dist/a-simple-autoclicker_0.1.2_amd64.deb
 ```
 
 The script automatically reads the version from `Cargo.toml` and the architecture
@@ -137,7 +137,7 @@ On Windows, presets are stored under
 ## Project structure
 
 - `src/app.rs` — GTK/libadwaita interface
-- `src/windows_app.rs` — native Windows interface, tray, and global hotkey
+- `src/windows_app.rs` — DPI-aware Windows interface, tray, and global hotkey
 - `src/clicker.rs` — timing, action-count limits, and worker state
 - `src/model.rs` — shared actions, hotkeys, modifiers, and positions
 - `src/backend/x11.rs` — X11/XTest input simulation and pointer capture

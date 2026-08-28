@@ -4,9 +4,10 @@ use windows_sys::Win32::{
     Foundation::{GetLastError, POINT},
     UI::{
         Input::KeyboardAndMouse::{
-            SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
-            MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
-            MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEINPUT,
+            SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
+            KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+            MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTDOWN,
+            MOUSEEVENTF_RIGHTUP, MOUSEINPUT,
         },
         WindowsAndMessaging::{GetCursorPos, SetCursorPos},
     },
@@ -21,9 +22,14 @@ pub struct WindowsBackend;
 
 impl InputBackend for WindowsBackend {
     fn perform(&mut self, action: Action, position: Option<ClickPosition>) -> Result<(), String> {
-        if let Some(position) = position {
-            if unsafe { SetCursorPos(position.x, position.y) } == 0 {
-                return Err(last_error("Could not move the pointer"));
+        if matches!(
+            action,
+            Action::LeftClick | Action::MiddleClick | Action::RightClick
+        ) {
+            if let Some(position) = position {
+                if unsafe { SetCursorPos(position.x, position.y) } == 0 {
+                    return Err(last_error("Could not move the pointer"));
+                }
             }
         }
 
@@ -31,7 +37,11 @@ impl InputBackend for WindowsBackend {
             Action::LeftClick => send_mouse(MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
             Action::MiddleClick => send_mouse(MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
             Action::RightClick => send_mouse(MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
-            Action::Key { keysym, modifiers } => send_key(keysym as u16, modifiers),
+            Action::Key { keysym, modifiers } => {
+                let virtual_key = u16::try_from(keysym)
+                    .map_err(|_| "The recorded key is not valid on Windows".to_string())?;
+                send_key(virtual_key, modifiers)
+            }
         }
     }
 }
@@ -95,13 +105,17 @@ fn mouse_input(flags: u32) -> INPUT {
 }
 
 fn key_input(virtual_key: u16, released: bool) -> INPUT {
+    let mut flags = if released { KEYEVENTF_KEYUP } else { 0 };
+    if matches!(virtual_key, 0x21..=0x2e) {
+        flags |= KEYEVENTF_EXTENDEDKEY;
+    }
     INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
             ki: KEYBDINPUT {
                 wVk: virtual_key,
                 wScan: 0,
-                dwFlags: if released { KEYEVENTF_KEYUP } else { 0 },
+                dwFlags: flags,
                 time: 0,
                 dwExtraInfo: 0,
             },

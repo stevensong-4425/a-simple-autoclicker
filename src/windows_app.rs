@@ -1,22 +1,29 @@
 use std::{
-    cell::{Cell, RefCell},
     mem::zeroed,
     ptr,
-    rc::Rc,
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc, Arc,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-use native_windows_gui as nwg;
+use eframe::egui::{
+    self, Align, Color32, FontFamily, FontId, Frame, Layout, Margin, RichText, Rounding, Stroke,
+    Vec2,
+};
+use tray_icon::{
+    menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
+    MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent,
+};
 use windows_sys::Win32::UI::{
     Input::KeyboardAndMouse::{
         GetAsyncKeyState, RegisterHotKey, UnregisterHotKey, VK_CONTROL, VK_LWIN, VK_MENU, VK_SHIFT,
     },
-    WindowsAndMessaging::{PeekMessageW, MSG, PM_REMOVE, WM_HOTKEY},
+    WindowsAndMessaging::{
+        MessageBoxW, PeekMessageW, MB_ICONERROR, MB_OK, MSG, PM_REMOVE, WM_HOTKEY,
+    },
 };
 
 use crate::{
@@ -27,479 +34,356 @@ use crate::{
 };
 
 const APP_TITLE: &str = "A Simple Autoclicker";
+const BLUE: Color32 = Color32::from_rgb(28, 126, 224);
+const TEXT: Color32 = Color32::from_rgb(48, 48, 48);
+const MUTED: Color32 = Color32::from_rgb(145, 145, 145);
 
 pub fn run() -> Result<(), String> {
-    nwg::init().map_err(|error| error.to_string())?;
-    nwg::Font::set_global_family("Segoe UI").map_err(|error| error.to_string())?;
+    let icon = app_icon(false);
+    let viewport_icon = egui::IconData {
+        rgba: icon.0.clone(),
+        width: icon.1,
+        height: icon.2,
+    };
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([760.0, 900.0])
+            .with_min_inner_size([620.0, 700.0])
+            .with_icon(viewport_icon),
+        follow_system_theme: false,
+        default_theme: eframe::Theme::Light,
+        ..Default::default()
+    };
 
-    let app = App::build().map_err(|error| error.to_string())?;
-    let weak = Rc::downgrade(&app);
-    let handler = nwg::full_bind_event_handler(&app.window.handle, move |event, data, handle| {
-        let Some(app) = weak.upgrade() else { return };
-        app.handle_event(event, data, handle);
-    });
-
-    nwg::dispatch_thread_events();
-    nwg::unbind_event_handler(&handler);
-    Ok(())
+    eframe::run_native(
+        APP_TITLE,
+        options,
+        Box::new(|creation_context| Box::new(WindowsApp::new(creation_context))),
+    )
+    .map_err(|error| error.to_string())
 }
 
-struct App {
+pub fn show_fatal_error(error: &str) {
+    let title = to_wide(APP_TITLE);
+    let message = to_wide(error);
+    unsafe {
+        MessageBoxW(
+            ptr::null_mut(),
+            message.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONERROR,
+        );
+    }
+}
+
+struct WindowsApp {
     engine: Arc<ClickEngine>,
     hotkey_thread: WindowsHotkeyThread,
     hotkey_toggle: Arc<AtomicBool>,
-    presets: RefCell<PresetStore>,
-    recorded_key: Cell<Option<(u32, KeyModifiers)>>,
-    recording: Cell<bool>,
-
-    window: nwg::Window,
-    action_combo: nwg::ComboBox<String>,
-    record_button: nwg::Button,
-    recorded_label: nwg::Label,
-    interval_input: nwg::TextInput,
-    duration_input: nwg::TextInput,
-    count_input: nwg::TextInput,
-    fixed_check: nwg::CheckBox,
-    position_label: nwg::Label,
-    capture_button: nwg::Button,
-    hotkey_combo: nwg::ComboBox<String>,
-    preset_combo: nwg::ComboBox<String>,
-    preset_name: nwg::TextInput,
-    preset_load: nwg::Button,
-    preset_save: nwg::Button,
-    start_button: nwg::Button,
-    status_label: nwg::Label,
-    timer: nwg::AnimationTimer,
-
-    idle_icon: nwg::Icon,
-    active_icon: nwg::Icon,
-    tray_active: Cell<bool>,
-    tray: nwg::TrayNotification,
-    tray_menu: nwg::Menu,
-    tray_show: nwg::MenuItem,
-    tray_toggle: nwg::MenuItem,
-    tray_exit: nwg::MenuItem,
+    presets: PresetStore,
+    action_index: usize,
+    recorded_key: Option<(u32, KeyModifiers)>,
+    recording: bool,
+    interval_ms: u64,
+    timed_run: bool,
+    duration_value: u64,
+    duration_unit: usize,
+    count_limited: bool,
+    max_actions: u64,
+    fixed_position: bool,
+    capture_at: Option<Instant>,
+    hotkey_index: usize,
+    tray_mode: bool,
+    preset_index: Option<usize>,
+    preset_name: String,
+    status_message: Option<String>,
+    tray_icon: Option<TrayIcon>,
+    tray_show: MenuItem,
+    tray_toggle: MenuItem,
+    tray_quit: MenuItem,
+    tray_active: bool,
+    allow_close: bool,
+    was_minimized: bool,
 }
 
-impl App {
-    fn build() -> Result<Rc<Self>, nwg::NwgError> {
+impl WindowsApp {
+    fn new(context: &eframe::CreationContext<'_>) -> Self {
+        configure_style(&context.egui_ctx);
         let engine = ClickEngine::start();
         let hotkey_toggle = Arc::new(AtomicBool::new(false));
         let hotkey_thread = WindowsHotkeyThread::start(Arc::clone(&hotkey_toggle), Hotkey::F8);
-        let presets = PresetStore::load();
 
-        let mut window = nwg::Window::default();
-        nwg::Window::builder()
-            .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE)
-            .size((640, 700))
-            .position((300, 100))
-            .title(APP_TITLE)
-            .center(true)
-            .build(&mut window)?;
+        let tray_show = MenuItem::new("Show window", true, None);
+        let tray_toggle = MenuItem::new("Start clicking", true, None);
+        let tray_quit = MenuItem::new("Quit", true, None);
+        let separator = PredefinedMenuItem::separator();
+        let tray_menu = Menu::with_items(&[&tray_show, &tray_toggle, &separator, &tray_quit]);
+        let (idle_rgba, width, height) = app_icon(false);
+        let tray_icon = tray_menu
+            .ok()
+            .and_then(|menu| {
+                tray_icon::Icon::from_rgba(idle_rgba, width, height)
+                    .ok()
+                    .map(|icon| (menu, icon))
+            })
+            .and_then(|(menu, icon)| {
+                TrayIconBuilder::new()
+                    .with_tooltip(APP_TITLE)
+                    .with_menu(Box::new(menu))
+                    .with_menu_on_left_click(false)
+                    .with_icon(icon)
+                    .build()
+                    .ok()
+            });
+        let status_message = tray_icon
+            .is_none()
+            .then(|| "The system tray icon could not be created.".to_string());
 
-        let mut action_title = nwg::Label::default();
-        label(&window, &mut action_title, "Action", (24, 20), (130, 24))?;
-        let mut action_combo = nwg::ComboBox::default();
-        nwg::ComboBox::builder()
-            .collection(vec![
-                "Left mouse click".into(),
-                "Middle mouse click".into(),
-                "Right mouse click".into(),
-                "Recorded keyboard key".into(),
-            ])
-            .selected_index(Some(0))
-            .position((180, 18))
-            .size((300, 120))
-            .parent(&window)
-            .build(&mut action_combo)?;
-
-        let mut record_button = nwg::Button::default();
-        button(
-            &window,
-            &mut record_button,
-            "Record keyboard key",
-            (180, 58),
-            (180, 30),
-        )?;
-        let mut recorded_label = nwg::Label::default();
-        label(
-            &window,
-            &mut recorded_label,
-            "No key recorded",
-            (370, 62),
-            (230, 24),
-        )?;
-
-        let mut interval_title = nwg::Label::default();
-        label(
-            &window,
-            &mut interval_title,
-            "Interval (milliseconds)",
-            (24, 108),
-            (150, 24),
-        )?;
-        let mut interval_input = nwg::TextInput::default();
-        input(&window, &mut interval_input, "100", (180, 104), (120, 28))?;
-
-        let mut duration_title = nwg::Label::default();
-        label(
-            &window,
-            &mut duration_title,
-            "Stop after (seconds)",
-            (24, 148),
-            (150, 24),
-        )?;
-        let mut duration_input = nwg::TextInput::default();
-        input(&window, &mut duration_input, "0", (180, 144), (120, 28))?;
-        let mut duration_hint = nwg::Label::default();
-        label(
-            &window,
-            &mut duration_hint,
-            "0 = never",
-            (315, 148),
-            (110, 24),
-        )?;
-
-        let mut count_title = nwg::Label::default();
-        label(
-            &window,
-            &mut count_title,
-            "Stop after actions",
-            (24, 188),
-            (150, 24),
-        )?;
-        let mut count_input = nwg::TextInput::default();
-        input(&window, &mut count_input, "0", (180, 184), (120, 28))?;
-        let mut count_hint = nwg::Label::default();
-        label(
-            &window,
-            &mut count_hint,
-            "0 = unlimited",
-            (315, 188),
-            (110, 24),
-        )?;
-
-        let mut fixed_check = nwg::CheckBox::default();
-        nwg::CheckBox::builder()
-            .text("Click at a fixed position")
-            .position((24, 232))
-            .size((190, 28))
-            .parent(&window)
-            .build(&mut fixed_check)?;
-        let mut position_label = nwg::Label::default();
-        label(
-            &window,
-            &mut position_label,
-            "Position: not set",
-            (225, 235),
-            (170, 24),
-        )?;
-        let mut capture_button = nwg::Button::default();
-        button(
-            &window,
-            &mut capture_button,
-            "Capture current pointer",
-            (405, 230),
-            (190, 30),
-        )?;
-
-        let mut hotkey_title = nwg::Label::default();
-        label(
-            &window,
-            &mut hotkey_title,
-            "Global start/stop key",
-            (24, 278),
-            (150, 24),
-        )?;
-        let mut hotkey_combo = nwg::ComboBox::default();
-        nwg::ComboBox::builder()
-            .collection(
-                Hotkey::LABELS
-                    .iter()
-                    .map(|value| (*value).to_string())
-                    .collect(),
-            )
-            .selected_index(Some(2))
-            .position((180, 274))
-            .size((120, 120))
-            .parent(&window)
-            .build(&mut hotkey_combo)?;
-
-        let mut separator = nwg::Label::default();
-        label(
-            &window,
-            &mut separator,
-            "Saved presets",
-            (24, 330),
-            (150, 24),
-        )?;
-        let mut preset_combo = nwg::ComboBox::default();
-        nwg::ComboBox::builder()
-            .collection(
-                presets
-                    .names()
-                    .iter()
-                    .map(|name| (*name).to_string())
-                    .collect(),
-            )
-            .position((180, 326))
-            .size((300, 150))
-            .parent(&window)
-            .build(&mut preset_combo)?;
-        let mut preset_load = nwg::Button::default();
-        button(&window, &mut preset_load, "Load", (490, 325), (105, 30))?;
-
-        let mut preset_name_title = nwg::Label::default();
-        label(
-            &window,
-            &mut preset_name_title,
-            "Preset name",
-            (24, 372),
-            (150, 24),
-        )?;
-        let mut preset_name = nwg::TextInput::default();
-        input(&window, &mut preset_name, "", (180, 368), (300, 28))?;
-        let mut preset_save = nwg::Button::default();
-        button(&window, &mut preset_save, "Save", (490, 367), (105, 30))?;
-
-        let mut start_button = nwg::Button::default();
-        button(&window, &mut start_button, "Start", (24, 430), (571, 48))?;
-        let mut status_label = nwg::Label::default();
-        label(
-            &window,
-            &mut status_label,
-            "Ready — press F8 or Start",
-            (24, 495),
-            (571, 60),
-        )?;
-
-        let mut help_label = nwg::Label::default();
-        label(
-            &window,
-            &mut help_label,
-            "Closing this window keeps the app in the system tray.\nSome elevated apps only accept clicks when this app is also run as administrator.",
-            (24, 570),
-            (571, 54),
-        )?;
-
-        let mut timer = nwg::AnimationTimer::default();
-        nwg::AnimationTimer::builder()
-            .interval(Duration::from_millis(150))
-            .active(true)
-            .parent(&window)
-            .build(&mut timer)?;
-
-        let mut idle_icon = nwg::Icon::default();
-        nwg::Icon::builder()
-            .source_system(Some(nwg::OemIcon::WinLogo))
-            .build(&mut idle_icon)?;
-        let mut active_icon = nwg::Icon::default();
-        nwg::Icon::builder()
-            .source_system(Some(nwg::OemIcon::Error))
-            .build(&mut active_icon)?;
-        window.set_icon(Some(&idle_icon));
-
-        let mut tray = nwg::TrayNotification::default();
-        nwg::TrayNotification::builder()
-            .parent(&window)
-            .icon(Some(&idle_icon))
-            .tip(Some(APP_TITLE))
-            .build(&mut tray)?;
-        let mut tray_menu = nwg::Menu::default();
-        nwg::Menu::builder()
-            .popup(true)
-            .parent(&window)
-            .build(&mut tray_menu)?;
-        let mut tray_show = nwg::MenuItem::default();
-        nwg::MenuItem::builder()
-            .text("Show window")
-            .parent(&tray_menu)
-            .build(&mut tray_show)?;
-        let mut tray_toggle = nwg::MenuItem::default();
-        nwg::MenuItem::builder()
-            .text("Start / Stop")
-            .parent(&tray_menu)
-            .build(&mut tray_toggle)?;
-        let mut tray_exit = nwg::MenuItem::default();
-        nwg::MenuItem::builder()
-            .text("Exit")
-            .parent(&tray_menu)
-            .build(&mut tray_exit)?;
-
-        Ok(Rc::new(Self {
+        Self {
             engine,
             hotkey_thread,
             hotkey_toggle,
-            presets: RefCell::new(presets),
-            recorded_key: Cell::new(None),
-            recording: Cell::new(false),
-            window,
-            action_combo,
-            record_button,
-            recorded_label,
-            interval_input,
-            duration_input,
-            count_input,
-            fixed_check,
-            position_label,
-            capture_button,
-            hotkey_combo,
-            preset_combo,
-            preset_name,
-            preset_load,
-            preset_save,
-            start_button,
-            status_label,
-            timer,
-            idle_icon,
-            active_icon,
-            tray_active: Cell::new(false),
-            tray,
-            tray_menu,
+            presets: PresetStore::load(),
+            action_index: 0,
+            recorded_key: None,
+            recording: false,
+            interval_ms: 100,
+            timed_run: false,
+            duration_value: 10,
+            duration_unit: 1,
+            count_limited: false,
+            max_actions: 100,
+            fixed_position: false,
+            capture_at: None,
+            hotkey_index: 2,
+            tray_mode: true,
+            preset_index: None,
+            preset_name: String::new(),
+            status_message,
+            tray_icon,
             tray_show,
             tray_toggle,
-            tray_exit,
-        }))
-    }
-
-    fn handle_event(&self, event: nwg::Event, data: nwg::EventData, handle: nwg::ControlHandle) {
-        use nwg::Event as E;
-        match event {
-            E::OnButtonClick if handle == self.record_button => self.begin_recording(),
-            E::OnButtonClick if handle == self.capture_button => self.capture_position(),
-            E::OnButtonClick if handle == self.start_button => self.toggle_from_ui(),
-            E::OnButtonClick if handle == self.preset_save => self.save_preset(),
-            E::OnButtonClick if handle == self.preset_load => self.load_preset(),
-            E::OnComboxBoxSelection if handle == self.hotkey_combo => self.update_hotkey(),
-            E::OnKeyPress if self.recording.get() => self.record_key(data.on_key()),
-            E::OnTimerTick if handle == self.timer => self.refresh_status(),
-            E::OnWindowClose if handle == self.window => self.window.set_visible(false),
-            E::OnWindowMinimize if handle == self.window => self.window.set_visible(false),
-            E::OnMousePress(nwg::MousePressEvent::MousePressLeftUp) if handle == self.tray => {
-                self.show_window()
-            }
-            E::OnContextMenu if handle == self.tray => {
-                let (x, y) = nwg::GlobalCursor::position();
-                self.tray_menu.popup(x, y);
-            }
-            E::OnMenuItemSelected if handle == self.tray_show => self.show_window(),
-            E::OnMenuItemSelected if handle == self.tray_toggle => self.toggle_from_ui(),
-            E::OnMenuItemSelected if handle == self.tray_exit => {
-                self.engine.set_active(false);
-                nwg::stop_thread_dispatch();
-            }
-            _ => {}
+            tray_quit,
+            tray_active: false,
+            allow_close: false,
+            was_minimized: false,
         }
     }
 
-    fn begin_recording(&self) {
-        self.recording.set(true);
-        self.record_button.set_text("Press a key now…");
-        self.window.set_focus();
+    fn process_window_state(&mut self, ctx: &egui::Context) {
+        let (close_requested, minimized) = ctx.input(|input| {
+            (
+                input.viewport().close_requested(),
+                input.viewport().minimized.unwrap_or(false),
+            )
+        });
+        if close_requested && self.tray_mode && !self.allow_close {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.status_message = Some("Hidden in the system tray.".into());
+        }
+        if minimized && !self.was_minimized && self.tray_mode {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.status_message = Some("Minimized to the system tray.".into());
+        }
+        self.was_minimized = minimized;
     }
 
-    fn record_key(&self, virtual_key: u32) {
-        if is_modifier_key(virtual_key) {
+    fn process_tray_events(&mut self, ctx: &egui::Context) {
+        while let Ok(event) = TrayIconEvent::receiver().try_recv() {
+            if matches!(
+                event,
+                TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                }
+            ) {
+                self.show_window(ctx);
+            }
+        }
+        while let Ok(event) = MenuEvent::receiver().try_recv() {
+            if event.id() == self.tray_show.id() {
+                self.show_window(ctx);
+            } else if event.id() == self.tray_toggle.id() {
+                self.toggle_clicking();
+            } else if event.id() == self.tray_quit.id() {
+                self.allow_close = true;
+                self.engine.set_active(false);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
+    }
+
+    fn process_keyboard_recording(&mut self, ctx: &egui::Context) {
+        if !self.recording {
             return;
         }
-        let modifiers = KeyModifiers {
-            shift: key_is_down(VK_SHIFT as i32),
-            control: key_is_down(VK_CONTROL as i32),
-            alt: key_is_down(VK_MENU as i32),
-            super_key: key_is_down(VK_LWIN as i32),
-        };
-        self.recorded_key.set(Some((virtual_key, modifiers)));
-        self.recording.set(false);
-        self.record_button.set_text("Record keyboard key");
-        self.recorded_label
-            .set_text(&key_label(virtual_key, modifiers));
-        self.action_combo.set_selection(Some(3));
+        let events = ctx.input(|input| input.events.clone());
+        for event in events {
+            let egui::Event::Key {
+                key,
+                pressed: true,
+                repeat: false,
+                modifiers,
+                ..
+            } = event
+            else {
+                continue;
+            };
+            let Some(virtual_key) = key_to_virtual_key(key) else {
+                self.status_message = Some("That key is not supported by Windows input.".into());
+                continue;
+            };
+            let modifiers = KeyModifiers {
+                shift: modifiers.shift || key_is_down(VK_SHIFT as i32),
+                control: modifiers.ctrl || key_is_down(VK_CONTROL as i32),
+                alt: modifiers.alt || key_is_down(VK_MENU as i32),
+                super_key: key_is_down(VK_LWIN as i32),
+            };
+            let hotkey = Hotkey::ALL[self.hotkey_index];
+            if virtual_key == hotkey.virtual_key() && modifiers == KeyModifiers::default() {
+                self.status_message = Some(format!(
+                    "{} controls start/stop. Choose another global hotkey first.",
+                    Hotkey::LABELS[self.hotkey_index]
+                ));
+                self.recording = false;
+                return;
+            }
+            self.recorded_key = Some((virtual_key, modifiers));
+            self.action_index = 3;
+            self.recording = false;
+            self.status_message = Some(format!("Recorded {}.", key_label(virtual_key, modifiers)));
+            return;
+        }
     }
 
-    fn capture_position(&self) {
+    fn process_capture(&mut self) {
+        let Some(deadline) = self.capture_at else {
+            return;
+        };
+        if Instant::now() < deadline {
+            return;
+        }
+        self.capture_at = None;
         match backend::pointer_position() {
             Ok(position) => {
                 self.engine.set_position(Some(position));
-                self.fixed_check
-                    .set_check_state(nwg::CheckBoxState::Checked);
-                self.position_label
-                    .set_text(&format!("Position: {}, {}", position.x, position.y));
+                self.fixed_position = true;
+                self.status_message = Some(format!(
+                    "Captured pointer position ({}, {}).",
+                    position.x, position.y
+                ));
             }
-            Err(error) => {
-                nwg::modal_error_message(&self.window, "Pointer capture failed", &error);
+            Err(error) => self.status_message = Some(error),
+        }
+    }
+
+    fn process_engine_state(&mut self) {
+        if self.hotkey_toggle.swap(false, Ordering::AcqRel) {
+            self.toggle_clicking();
+        }
+        let active = self.engine.is_active();
+        if active != self.tray_active {
+            self.tray_active = active;
+            self.tray_toggle.set_text(if active {
+                "Stop clicking"
+            } else {
+                "Start clicking"
+            });
+            if let Some(tray_icon) = &self.tray_icon {
+                let (rgba, width, height) = app_icon(active);
+                if let Ok(icon) = tray_icon::Icon::from_rgba(rgba, width, height) {
+                    let _ = tray_icon.set_icon(Some(icon));
+                }
+                let _ = tray_icon.set_tooltip(Some(if active {
+                    "A Simple Autoclicker — Clicking"
+                } else {
+                    APP_TITLE
+                }));
+            }
+            if !active && self.engine.take_completed_run() {
+                self.status_message = Some("The selected run limit was reached.".into());
             }
         }
     }
 
-    fn toggle_from_ui(&self) {
+    fn toggle_clicking(&mut self) {
         if self.engine.is_active() {
             self.engine.set_active(false);
             return;
         }
-        match self.apply_controls_to_engine() {
-            Ok(()) => self.engine.set_active(true),
-            Err(error) => {
-                nwg::modal_error_message(&self.window, "Check the settings", &error);
+        match self.apply_settings() {
+            Ok(()) => {
+                self.status_message = None;
+                self.engine.set_active(true);
             }
+            Err(error) => self.status_message = Some(error),
         }
     }
 
-    fn apply_controls_to_engine(&self) -> Result<(), String> {
-        let interval = parse_u64(&self.interval_input, "Interval")?.max(10);
-        let duration_seconds = parse_u64(&self.duration_input, "Duration")?;
-        let max_actions = parse_u64(&self.count_input, "Action limit")?;
-        let action = self.selected_action()?;
-        let fixed = self.fixed_check.check_state() == nwg::CheckBoxState::Checked;
-        if fixed && self.engine.position().is_none() {
-            return Err("Capture a pointer position first, or turn off fixed position.".into());
+    fn apply_settings(&self) -> Result<(), String> {
+        if self.interval_ms < 10 {
+            return Err("The interval must be at least 10 milliseconds.".into());
         }
-        self.engine.set_interval_ms(interval);
-        self.engine
-            .set_duration_ms(duration_seconds.saturating_mul(1000));
-        self.engine.set_max_actions(max_actions);
+        let action = self.selected_action()?;
+        if self.fixed_position && self.engine.position().is_none() {
+            return Err("Capture a pointer position before enabling fixed position.".into());
+        }
         self.engine.set_action(action);
-        if !fixed {
+        self.engine.set_interval_ms(self.interval_ms);
+        self.engine.set_duration_ms(if self.timed_run {
+            duration_ms(self.duration_value, self.duration_unit)
+        } else {
+            0
+        });
+        self.engine.set_max_actions(if self.count_limited {
+            self.max_actions.max(1)
+        } else {
+            0
+        });
+        if !self.fixed_position {
             self.engine.set_position(None);
-            self.position_label.set_text("Position: not set");
         }
         Ok(())
     }
 
     fn selected_action(&self) -> Result<Action, String> {
-        match self.action_combo.selection().unwrap_or(0) {
-            0 => Ok(Action::LeftClick),
-            1 => Ok(Action::MiddleClick),
-            2 => Ok(Action::RightClick),
-            3 => self
-                .recorded_key
-                .get()
-                .map(|(keysym, modifiers)| Action::Key {
+        let action = match self.action_index {
+            0 => Action::LeftClick,
+            1 => Action::MiddleClick,
+            2 => Action::RightClick,
+            3 => {
+                let (keysym, modifiers) = self
+                    .recorded_key
+                    .ok_or_else(|| "Record a keyboard key before starting.".to_string())?;
+                Action::Key {
                     keysym: keysym as u64,
                     modifiers,
-                })
-                .ok_or_else(|| "Record a keyboard key first.".to_string()),
-            _ => Err("Choose a valid action.".into()),
+                }
+            }
+            _ => return Err("Choose a valid repeated action.".into()),
+        };
+        if let Action::Key { keysym, modifiers } = action {
+            if keysym == Hotkey::ALL[self.hotkey_index].virtual_key() as u64
+                && modifiers == KeyModifiers::default()
+            {
+                return Err("The repeated key and global toggle hotkey must be different.".into());
+            }
         }
+        Ok(action)
     }
 
-    fn update_hotkey(&self) {
-        let hotkey = selected_hotkey(&self.hotkey_combo);
-        self.hotkey_thread.set(hotkey);
-        self.refresh_status();
-    }
-
-    fn save_preset(&self) {
-        let name = self.preset_name.text().trim().to_string();
+    fn save_preset(&mut self) {
+        let name = self.preset_name.trim().to_string();
         if name.is_empty() {
-            nwg::modal_error_message(
-                &self.window,
-                "Preset name required",
-                "Enter a name for this preset.",
-            );
+            self.status_message = Some("Enter a name before saving the preset.".into());
             return;
         }
-        if let Err(error) = self.apply_controls_to_engine() {
-            nwg::modal_error_message(&self.window, "Check the settings", &error);
+        if let Err(error) = self.apply_settings() {
+            self.status_message = Some(error);
             return;
         }
         let action = self.engine.action();
@@ -510,191 +394,553 @@ impl App {
             interval_ms: self.engine.interval_ms(),
             duration_ms: self.engine.duration_ms(),
             max_actions: self.engine.max_actions(),
-            position: self.engine.position(),
-            hotkey: selected_hotkey(&self.hotkey_combo),
+            position: if self.fixed_position {
+                self.engine.position()
+            } else {
+                None
+            },
+            hotkey: Hotkey::ALL[self.hotkey_index],
         };
-        if let Err(error) = self.presets.borrow_mut().save(preset) {
-            nwg::modal_error_message(&self.window, "Could not save preset", &error);
-            return;
+        match self.presets.save(preset) {
+            Ok(()) => {
+                self.preset_index = self.presets.names().iter().position(|saved| *saved == name);
+                self.status_message = Some("Preset saved.".into());
+            }
+            Err(error) => self.status_message = Some(format!("Could not save preset: {error}")),
         }
-        let names = self
-            .presets
-            .borrow()
-            .names()
-            .iter()
-            .map(|name| (*name).to_string())
-            .collect();
-        self.preset_combo.set_collection(names);
-        self.preset_combo.set_selection_string(&name);
-        self.status_label.set_text("Preset saved");
     }
 
-    fn load_preset(&self) {
-        let Some(index) = self.preset_combo.selection() else {
-            nwg::modal_error_message(
-                &self.window,
-                "Choose a preset",
-                "Select a saved preset first.",
-            );
+    fn load_preset(&mut self) {
+        let Some(index) = self.preset_index else {
+            self.status_message = Some("Choose a saved preset first.".into());
             return;
         };
-        let Some(preset) = self.presets.borrow().get(index) else {
+        let Some(preset) = self.presets.get(index) else {
             return;
         };
-        self.interval_input
-            .set_text(&preset.interval_ms.to_string());
-        self.duration_input
-            .set_text(&(preset.duration_ms / 1000).to_string());
-        self.count_input.set_text(&preset.max_actions.to_string());
-        self.preset_name.set_text(&preset.name);
+        self.preset_name = preset.name.clone();
+        self.interval_ms = preset.interval_ms;
+        let (duration_value, duration_unit) = split_duration(preset.duration_ms);
+        self.timed_run = preset.duration_ms > 0;
+        self.duration_value = duration_value;
+        self.duration_unit = duration_unit;
+        self.count_limited = preset.max_actions > 0;
+        self.max_actions = preset.max_actions.max(1);
+        self.fixed_position = preset.position.is_some();
+        self.engine.set_position(preset.position);
+        self.hotkey_index = Hotkey::ALL
+            .iter()
+            .position(|hotkey| *hotkey == preset.hotkey)
+            .unwrap_or(2);
+        self.hotkey_thread.set(preset.hotkey);
         match preset.action {
-            Action::LeftClick => self.action_combo.set_selection(Some(0)),
-            Action::MiddleClick => self.action_combo.set_selection(Some(1)),
-            Action::RightClick => self.action_combo.set_selection(Some(2)),
+            Action::LeftClick => self.action_index = 0,
+            Action::MiddleClick => self.action_index = 1,
+            Action::RightClick => self.action_index = 2,
             Action::Key { keysym, modifiers } => {
-                self.recorded_key.set(Some((keysym as u32, modifiers)));
-                self.recorded_label
-                    .set_text(&key_label(keysym as u32, modifiers));
-                self.action_combo.set_selection(Some(3));
+                self.action_index = 3;
+                self.recorded_key = Some((keysym as u32, modifiers));
             }
         }
-        self.engine.set_position(preset.position);
-        self.fixed_check
-            .set_check_state(if preset.position.is_some() {
-                nwg::CheckBoxState::Checked
-            } else {
-                nwg::CheckBoxState::Unchecked
-            });
-        if let Some(position) = preset.position {
-            self.position_label
-                .set_text(&format!("Position: {}, {}", position.x, position.y));
-        } else {
-            self.position_label.set_text("Position: not set");
-        }
-        let hotkey_index = Hotkey::ALL
-            .iter()
-            .position(|key| *key == preset.hotkey)
-            .unwrap_or(2);
-        self.hotkey_combo.set_selection(Some(hotkey_index));
-        self.hotkey_thread.set(preset.hotkey);
-        self.status_label.set_text("Preset loaded");
+        self.status_message = Some(format!("Loaded preset “{}”.", preset.name));
     }
 
-    fn refresh_status(&self) {
-        if self.hotkey_toggle.swap(false, Ordering::AcqRel) {
-            self.toggle_from_ui();
+    fn show_window(&mut self, ctx: &egui::Context) {
+        if matches!(
+            self.status_message.as_deref(),
+            Some("Hidden in the system tray." | "Minimized to the system tray.")
+        ) {
+            self.status_message = None;
         }
-        let hotkey = selected_hotkey(&self.hotkey_combo);
-        let active = self.engine.is_active();
-        if active != self.tray_active.get() {
-            self.tray_active.set(active);
-            self.tray.set_icon(if active {
-                &self.active_icon
-            } else {
-                &self.idle_icon
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        ctx.request_repaint();
+    }
+
+    fn click_settings_ui(&mut self, ui: &mut egui::Ui) {
+        group_heading(ui, "Click settings");
+        card(ui, |ui| {
+            settings_row(ui, "Repeated action", self.action_subtitle(), |ui| {
+                ui.horizontal(|ui| {
+                    for (index, label) in ["Left", "Middle", "Right"].iter().enumerate() {
+                        if segment_button(ui, label, self.action_index == index).clicked() {
+                            self.action_index = index;
+                        }
+                    }
+                });
             });
-        }
-        if let Some(error) = self.engine.backend_error() {
-            self.status_label.set_text(&format!("Input error: {error}"));
-            self.start_button.set_text("Start");
-        } else if active {
-            let time = self
+            row_separator(ui);
+            settings_row(
+                ui,
+                "Keyboard action",
+                self.recorded_key
+                    .map(|(key, modifiers)| format!("Recorded: {}", key_label(key, modifiers)))
+                    .unwrap_or_else(|| "Record any keyboard key or key combination".into()),
+                |ui| {
+                    if ui
+                        .add_sized(
+                            [164.0, 34.0],
+                            egui::Button::new(if self.recording {
+                                "Press a key…"
+                            } else {
+                                "Record a key…"
+                            }),
+                        )
+                        .clicked()
+                    {
+                        self.recording = true;
+                        self.status_message =
+                            Some("Press the key or key combination to repeat.".into());
+                    }
+                },
+            );
+            row_separator(ui);
+            let position_text = self
                 .engine
-                .remaining_ms()
-                .map(|ms| format!(" • {:.1}s left", ms as f64 / 1000.0))
-                .unwrap_or_default();
-            let count = self
-                .engine
-                .remaining_actions()
-                .map(|value| format!(" • {value} actions left"))
-                .unwrap_or_default();
-            self.status_label.set_text(&format!("Running{time}{count}"));
-            self.start_button.set_text("Stop");
-        } else {
-            self.start_button.set_text("Start");
-            let suffix = if self.engine.take_completed_run() {
-                " • limit reached"
+                .position()
+                .map(|position| format!("Clicks will be sent to ({}, {})", position.x, position.y))
+                .unwrap_or_else(|| "Off — mouse clicks use the current pointer position".into());
+            settings_row(ui, "Fixed mouse position", position_text, |ui| {
+                ui.horizontal(|ui| {
+                    let capture_label = self
+                        .capture_at
+                        .map(|deadline| {
+                            format!(
+                                "Capturing in {}…",
+                                deadline.saturating_duration_since(Instant::now()).as_secs() + 1
+                            )
+                        })
+                        .unwrap_or_else(|| "Capture position…".into());
+                    if ui
+                        .add_enabled(
+                            self.capture_at.is_none(),
+                            egui::Button::new(capture_label).min_size(Vec2::new(160.0, 34.0)),
+                        )
+                        .clicked()
+                    {
+                        self.capture_at = Some(Instant::now() + Duration::from_secs(2));
+                        self.status_message =
+                            Some("Move the pointer to the target position.".into());
+                    }
+                    toggle(ui, &mut self.fixed_position);
+                });
+            });
+            row_separator(ui);
+            settings_row(ui, "Interval", "Delay between repeated actions", |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut self.interval_ms)
+                            .clamp_range(10..=60_000)
+                            .speed(10),
+                    );
+                    ui.label("ms");
+                });
+            });
+            row_separator(ui);
+            settings_row(
+                ui,
+                "Stop automatically",
+                "End the run after a set amount of time",
+                |ui| {
+                    toggle(ui, &mut self.timed_run);
+                },
+            );
+            row_separator(ui);
+            settings_row(
+                ui,
+                "Run duration",
+                "The timer starts when clicking begins",
+                |ui| {
+                    ui.add_enabled_ui(self.timed_run, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::DragValue::new(&mut self.duration_value)
+                                    .clamp_range(1..=9_999),
+                            );
+                            egui::ComboBox::from_id_source("duration-unit")
+                                .selected_text(["Seconds", "Minutes", "Hours"][self.duration_unit])
+                                .show_ui(ui, |ui| {
+                                    for (index, name) in
+                                        ["Seconds", "Minutes", "Hours"].iter().enumerate()
+                                    {
+                                        ui.selectable_value(&mut self.duration_unit, index, *name);
+                                    }
+                                });
+                        });
+                    });
+                },
+            );
+            row_separator(ui);
+            settings_row(
+                ui,
+                "Stop after actions",
+                "End after an exact number of clicks or key presses",
+                |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add_enabled(
+                            self.count_limited,
+                            egui::DragValue::new(&mut self.max_actions).clamp_range(1..=10_000_000),
+                        );
+                        toggle(ui, &mut self.count_limited);
+                    });
+                },
+            );
+            row_separator(ui);
+            settings_row(ui, "Global toggle hotkey", self.hotkey_subtitle(), |ui| {
+                let old_index = self.hotkey_index;
+                egui::ComboBox::from_id_source("global-hotkey")
+                    .selected_text(Hotkey::LABELS[self.hotkey_index])
+                    .show_ui(ui, |ui| {
+                        for (index, label) in Hotkey::LABELS.iter().enumerate() {
+                            ui.selectable_value(&mut self.hotkey_index, index, *label);
+                        }
+                    });
+                if self.hotkey_index != old_index {
+                    self.hotkey_thread.set(Hotkey::ALL[self.hotkey_index]);
+                }
+            });
+            row_separator(ui);
+            settings_row(
+                ui,
+                "Keep in system tray",
+                "Closing or minimizing hides this window; use the tray icon to reopen or quit",
+                |ui| {
+                    ui.add_enabled_ui(self.tray_icon.is_some(), |ui| {
+                        toggle(ui, &mut self.tray_mode);
+                    });
+                },
+            );
+        });
+    }
+
+    fn presets_ui(&mut self, ui: &mut egui::Ui) {
+        group_heading(ui, "Presets");
+        card(ui, |ui| {
+            settings_row(
+                ui,
+                "Saved preset",
+                "Load a previously saved configuration",
+                |ui| {
+                    ui.horizontal(|ui| {
+                        let selected = self
+                            .preset_index
+                            .and_then(|index| self.presets.get(index))
+                            .map(|preset| preset.name)
+                            .unwrap_or_else(|| "Choose a preset".into());
+                        egui::ComboBox::from_id_source("saved-preset")
+                            .selected_text(selected)
+                            .width(220.0)
+                            .show_ui(ui, |ui| {
+                                for (index, name) in self.presets.names().iter().enumerate() {
+                                    ui.selectable_value(&mut self.preset_index, Some(index), *name);
+                                }
+                            });
+                        if ui
+                            .add_sized([76.0, 34.0], egui::Button::new("Load"))
+                            .clicked()
+                        {
+                            self.load_preset();
+                        }
+                    });
+                },
+            );
+            row_separator(ui);
+            settings_row(
+                ui,
+                "Save configuration",
+                "Presets are stored in your user configuration folder",
+                |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add_sized(
+                            [175.0, 34.0],
+                            egui::TextEdit::singleline(&mut self.preset_name)
+                                .hint_text("Preset name"),
+                        );
+                        if ui
+                            .add_sized([112.0, 34.0], egui::Button::new("Save current"))
+                            .clicked()
+                        {
+                            self.save_preset();
+                        }
+                    });
+                },
+            );
+        });
+    }
+
+    fn status_ui(&mut self, ui: &mut egui::Ui) {
+        group_heading(ui, "Status");
+        card(ui, |ui| {
+            let active = self.engine.is_active();
+            ui.label(
+                RichText::new(if active { "Clicking" } else { "Ready" })
+                    .size(17.0)
+                    .color(TEXT),
+            );
+            ui.add_space(3.0);
+            let subtitle = if let Some(error) = self.engine.backend_error() {
+                format!("Input backend error: {error}")
+            } else if let Some(message) = &self.status_message {
+                message.clone()
+            } else if active {
+                self.progress_text()
             } else {
-                ""
+                format!(
+                    "Press {} or use the button below to start",
+                    Hotkey::LABELS[self.hotkey_index]
+                )
             };
-            self.status_label.set_text(&format!(
-                "Ready — press {} or Start{suffix}",
-                hotkey_label(hotkey)
-            ));
+            ui.label(RichText::new(subtitle).size(14.0).color(MUTED));
+        });
+        ui.add_space(2.0);
+        let active = self.engine.is_active();
+        let button = egui::Button::new(
+            RichText::new(if active {
+                "Stop clicking"
+            } else {
+                "Start clicking"
+            })
+            .size(17.0)
+            .strong()
+            .color(Color32::WHITE),
+        )
+        .fill(if active {
+            Color32::from_rgb(210, 48, 48)
+        } else {
+            BLUE
+        })
+        .rounding(22.0);
+        if ui.add_sized([ui.available_width(), 48.0], button).clicked() {
+            self.toggle_clicking();
         }
     }
 
-    fn show_window(&self) {
-        self.window.set_visible(true);
-        self.window.set_focus();
+    fn action_subtitle(&self) -> String {
+        match self.action_index {
+            0 => "Left mouse click".into(),
+            1 => "Middle mouse click".into(),
+            2 => "Right mouse click".into(),
+            3 => self
+                .recorded_key
+                .map(|(key, modifiers)| format!("{} key", key_label(key, modifiers)))
+                .unwrap_or_else(|| "Record a keyboard key below".into()),
+            _ => "Choose an action".into(),
+        }
+    }
+
+    fn hotkey_subtitle(&self) -> String {
+        if self.hotkey_thread.available() {
+            "Works while this window is in the background".into()
+        } else {
+            format!(
+                "{} is already in use by another application",
+                Hotkey::LABELS[self.hotkey_index]
+            )
+        }
+    }
+
+    fn progress_text(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(remaining) = self.engine.remaining_ms() {
+            parts.push(format!("{} remaining", format_duration(remaining)));
+        }
+        if let Some(remaining) = self.engine.remaining_actions() {
+            parts.push(format!("{remaining} actions remaining"));
+        }
+        if parts.is_empty() {
+            format!(
+                "Press {} or Stop to finish",
+                Hotkey::LABELS[self.hotkey_index]
+            )
+        } else {
+            parts.join(" • ")
+        }
     }
 }
 
-fn label(
-    parent: &nwg::Window,
-    output: &mut nwg::Label,
-    text: &str,
-    position: (i32, i32),
-    size: (i32, i32),
-) -> Result<(), nwg::NwgError> {
-    nwg::Label::builder()
-        .text(text)
-        .position(position)
-        .size(size)
-        .parent(parent)
-        .build(output)
+impl eframe::App for WindowsApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.process_window_state(ctx);
+        self.process_tray_events(ctx);
+        self.process_keyboard_recording(ctx);
+        self.process_capture();
+        self.process_engine_state();
+
+        egui::CentralPanel::default()
+            .frame(Frame::none().fill(Color32::from_rgb(248, 248, 248)))
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.set_max_width(700.0);
+                            ui.add_space(12.0);
+                            ui.label(RichText::new(APP_TITLE).size(19.0).strong().color(TEXT));
+                            ui.add_space(28.0);
+                            self.click_settings_ui(ui);
+                            ui.add_space(26.0);
+                            self.presets_ui(ui);
+                            ui.add_space(26.0);
+                            self.status_ui(ui);
+                            ui.add_space(20.0);
+                        });
+                    });
+            });
+
+        ctx.request_repaint_after(Duration::from_millis(
+            if self.engine.is_active() || self.capture_at.is_some() {
+                50
+            } else {
+                150
+            },
+        ));
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.engine.set_active(false);
+    }
 }
 
-fn button(
-    parent: &nwg::Window,
-    output: &mut nwg::Button,
-    text: &str,
-    position: (i32, i32),
-    size: (i32, i32),
-) -> Result<(), nwg::NwgError> {
-    nwg::Button::builder()
-        .text(text)
-        .position(position)
-        .size(size)
-        .parent(parent)
-        .build(output)
+fn configure_style(ctx: &egui::Context) {
+    let mut style = (*ctx.style()).clone();
+    style.text_styles.insert(
+        egui::TextStyle::Body,
+        FontId::new(15.0, FontFamily::Proportional),
+    );
+    style.text_styles.insert(
+        egui::TextStyle::Button,
+        FontId::new(15.0, FontFamily::Proportional),
+    );
+    style.spacing.item_spacing = Vec2::new(8.0, 8.0);
+    style.spacing.button_padding = Vec2::new(12.0, 7.0);
+    style.visuals = egui::Visuals::light();
+    style.visuals.panel_fill = Color32::from_rgb(248, 248, 248);
+    style.visuals.widgets.inactive.bg_fill = Color32::from_rgb(235, 235, 235);
+    style.visuals.widgets.inactive.rounding = Rounding::same(7.0);
+    style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(224, 224, 224);
+    style.visuals.widgets.hovered.rounding = Rounding::same(7.0);
+    style.visuals.widgets.active.bg_fill = Color32::from_rgb(205, 205, 205);
+    style.visuals.widgets.active.rounding = Rounding::same(7.0);
+    style.visuals.selection.bg_fill = BLUE;
+    ctx.set_style(style);
 }
 
-fn input(
-    parent: &nwg::Window,
-    output: &mut nwg::TextInput,
-    text: &str,
-    position: (i32, i32),
-    size: (i32, i32),
-) -> Result<(), nwg::NwgError> {
-    nwg::TextInput::builder()
-        .text(text)
-        .position(position)
-        .size(size)
-        .parent(parent)
-        .build(output)
+fn group_heading(ui: &mut egui::Ui, title: &str) {
+    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+        ui.label(RichText::new(title).size(20.0).strong().color(TEXT));
+    });
+    ui.add_space(7.0);
 }
 
-fn parse_u64(input: &nwg::TextInput, name: &str) -> Result<u64, String> {
-    input
-        .text()
-        .trim()
-        .parse()
-        .map_err(|_| format!("{name} must be a whole number."))
+fn card(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
+    Frame::none()
+        .fill(Color32::WHITE)
+        .stroke(Stroke::new(1.0_f32, Color32::from_rgb(222, 222, 222)))
+        .rounding(11.0)
+        .inner_margin(Margin::symmetric(14.0, 5.0))
+        .shadow(egui::epaint::Shadow {
+            offset: Vec2::new(0.0, 1.0),
+            blur: 4.0,
+            spread: 0.0,
+            color: Color32::from_black_alpha(22),
+        })
+        .show(ui, contents);
 }
 
-fn selected_hotkey(combo: &nwg::ComboBox<String>) -> Hotkey {
-    Hotkey::ALL
-        .get(combo.selection().unwrap_or(2))
-        .copied()
-        .unwrap_or(Hotkey::F8)
+fn settings_row(
+    ui: &mut egui::Ui,
+    title: &str,
+    subtitle: impl Into<String>,
+    controls: impl FnOnce(&mut egui::Ui),
+) {
+    let subtitle = subtitle.into();
+    ui.horizontal(|ui| {
+        ui.set_min_height(52.0);
+        let left_width = (ui.available_width() * 0.53).clamp(260.0, 370.0);
+        ui.allocate_ui_with_layout(
+            Vec2::new(left_width, 50.0),
+            Layout::top_down(Align::Min),
+            |ui| {
+                ui.add_space(2.0);
+                ui.label(RichText::new(title).size(16.0).color(TEXT));
+                ui.label(RichText::new(subtitle).size(13.5).color(MUTED));
+            },
+        );
+        ui.with_layout(Layout::right_to_left(Align::Center), controls);
+    });
 }
 
-fn hotkey_label(hotkey: Hotkey) -> &'static str {
-    Hotkey::LABELS[Hotkey::ALL
-        .iter()
-        .position(|key| *key == hotkey)
-        .unwrap_or(2)]
+fn row_separator(ui: &mut egui::Ui) {
+    ui.separator();
+}
+
+fn segment_button(ui: &mut egui::Ui, text: &str, selected: bool) -> egui::Response {
+    ui.add_sized(
+        [76.0, 36.0],
+        egui::Button::new(RichText::new(text).strong().color(TEXT))
+            .fill(if selected {
+                Color32::from_rgb(198, 198, 198)
+            } else {
+                Color32::from_rgb(235, 235, 235)
+            })
+            .rounding(6.0),
+    )
+}
+
+fn toggle(ui: &mut egui::Ui, enabled: &mut bool) -> egui::Response {
+    let desired_size = Vec2::new(46.0, 26.0);
+    let (rect, mut response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
+    if response.clicked() {
+        *enabled = !*enabled;
+        response.mark_changed();
+    }
+    let amount = ui.ctx().animate_bool(response.id, *enabled);
+    let background = if *enabled {
+        BLUE
+    } else {
+        Color32::from_rgb(215, 215, 215)
+    };
+    ui.painter()
+        .rect_filled(rect, rect.height() / 2.0, background);
+    let radius = rect.height() * 0.38;
+    let x = egui::lerp(
+        (rect.left() + rect.height() / 2.0)..=(rect.right() - rect.height() / 2.0),
+        amount,
+    );
+    ui.painter()
+        .circle_filled(egui::pos2(x, rect.center().y), radius, Color32::WHITE);
+    response
+}
+
+fn duration_ms(value: u64, unit: usize) -> u64 {
+    value.saturating_mul(match unit {
+        0 => 1_000,
+        1 => 60_000,
+        _ => 3_600_000,
+    })
+}
+
+fn split_duration(milliseconds: u64) -> (u64, usize) {
+    if milliseconds >= 3_600_000 && milliseconds % 3_600_000 == 0 {
+        (milliseconds / 3_600_000, 2)
+    } else if milliseconds >= 60_000 && milliseconds % 60_000 == 0 {
+        (milliseconds / 60_000, 1)
+    } else {
+        ((milliseconds / 1_000).max(1), 0)
+    }
+}
+
+fn format_duration(milliseconds: u64) -> String {
+    let seconds = milliseconds.div_ceil(1_000);
+    let hours = seconds / 3_600;
+    let minutes = (seconds % 3_600) / 60;
+    let seconds = seconds % 60;
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
+    }
 }
 
 fn action_label(action: Action) -> String {
@@ -710,8 +956,109 @@ fn key_is_down(virtual_key: i32) -> bool {
     unsafe { GetAsyncKeyState(virtual_key) < 0 }
 }
 
-fn is_modifier_key(key: u32) -> bool {
-    matches!(key, 0x10 | 0x11 | 0x12 | 0x5b | 0x5c | 0xa0..=0xa5)
+fn key_to_virtual_key(key: egui::Key) -> Option<u32> {
+    use egui::Key;
+    Some(match key {
+        Key::Backspace => 0x08,
+        Key::Tab => 0x09,
+        Key::Enter => 0x0d,
+        Key::Escape => 0x1b,
+        Key::Space => 0x20,
+        Key::PageUp => 0x21,
+        Key::PageDown => 0x22,
+        Key::End => 0x23,
+        Key::Home => 0x24,
+        Key::ArrowLeft => 0x25,
+        Key::ArrowUp => 0x26,
+        Key::ArrowRight => 0x27,
+        Key::ArrowDown => 0x28,
+        Key::Insert => 0x2d,
+        Key::Delete => 0x2e,
+        Key::Num0 => 0x30,
+        Key::Num1 => 0x31,
+        Key::Num2 => 0x32,
+        Key::Num3 => 0x33,
+        Key::Num4 => 0x34,
+        Key::Num5 => 0x35,
+        Key::Num6 => 0x36,
+        Key::Num7 => 0x37,
+        Key::Num8 => 0x38,
+        Key::Num9 => 0x39,
+        Key::A => 0x41,
+        Key::B => 0x42,
+        Key::C => 0x43,
+        Key::D => 0x44,
+        Key::E => 0x45,
+        Key::F => 0x46,
+        Key::G => 0x47,
+        Key::H => 0x48,
+        Key::I => 0x49,
+        Key::J => 0x4a,
+        Key::K => 0x4b,
+        Key::L => 0x4c,
+        Key::M => 0x4d,
+        Key::N => 0x4e,
+        Key::O => 0x4f,
+        Key::P => 0x50,
+        Key::Q => 0x51,
+        Key::R => 0x52,
+        Key::S => 0x53,
+        Key::T => 0x54,
+        Key::U => 0x55,
+        Key::V => 0x56,
+        Key::W => 0x57,
+        Key::X => 0x58,
+        Key::Y => 0x59,
+        Key::Z => 0x5a,
+        Key::F1 => 0x70,
+        Key::F2 => 0x71,
+        Key::F3 => 0x72,
+        Key::F4 => 0x73,
+        Key::F5 => 0x74,
+        Key::F6 => 0x75,
+        Key::F7 => 0x76,
+        Key::F8 => 0x77,
+        Key::F9 => 0x78,
+        Key::F10 => 0x79,
+        Key::F11 => 0x7a,
+        Key::F12 => 0x7b,
+        Key::F13 => 0x7c,
+        Key::F14 => 0x7d,
+        Key::F15 => 0x7e,
+        Key::F16 => 0x7f,
+        Key::F17 => 0x80,
+        Key::F18 => 0x81,
+        Key::F19 => 0x82,
+        Key::F20 => 0x83,
+        Key::F21 => 0x84,
+        Key::F22 => 0x85,
+        Key::F23 => 0x86,
+        Key::F24 => 0x87,
+        Key::Semicolon | Key::Colon => 0xba,
+        Key::Plus | Key::Equals => 0xbb,
+        Key::Comma => 0xbc,
+        Key::Minus => 0xbd,
+        Key::Period => 0xbe,
+        Key::Slash | Key::Questionmark => 0xbf,
+        Key::Backtick => 0xc0,
+        Key::OpenBracket => 0xdb,
+        Key::Backslash | Key::Pipe => 0xdc,
+        Key::CloseBracket => 0xdd,
+        Key::Copy
+        | Key::Cut
+        | Key::Paste
+        | Key::F25
+        | Key::F26
+        | Key::F27
+        | Key::F28
+        | Key::F29
+        | Key::F30
+        | Key::F31
+        | Key::F32
+        | Key::F33
+        | Key::F34
+        | Key::F35 => return None,
+    })
 }
 
 fn key_label(key: u32, modifiers: KeyModifiers) -> String {
@@ -745,34 +1092,83 @@ fn key_label(key: u32, modifiers: KeyModifiers) -> String {
         0x2d => "Insert".into(),
         0x2e => "Delete".into(),
         0x30..=0x39 | 0x41..=0x5a => char::from_u32(key).unwrap_or('?').to_string(),
-        0x60..=0x69 => format!("Numpad {}", key - 0x60),
         0x70..=0x87 => format!("F{}", key - 0x6f),
+        0xba => ";".into(),
+        0xbb => "=".into(),
+        0xbc => ",".into(),
+        0xbd => "-".into(),
+        0xbe => ".".into(),
+        0xbf => "/".into(),
+        0xc0 => "`".into(),
+        0xdb => "[".into(),
+        0xdc => "\\".into(),
+        0xdd => "]".into(),
         _ => format!("Key 0x{key:02X}"),
     };
     pieces.push(key_name);
     pieces.join("+")
 }
 
+fn app_icon(active: bool) -> (Vec<u8>, u32, u32) {
+    let size = 32u32;
+    let center = (size - 1) as f32 / 2.0;
+    let radius = center - 1.0;
+    let color = if active {
+        (224, 42, 42)
+    } else {
+        (28, 126, 224)
+    };
+    let mut rgba = Vec::with_capacity((size * size * 4) as usize);
+    for y in 0..size {
+        for x in 0..size {
+            let dx = x as f32 - center;
+            let dy = y as f32 - center;
+            if dx * dx + dy * dy <= radius * radius {
+                let white_mark = ((14..=17).contains(&x) && (7..=23).contains(&y))
+                    || ((10..=21).contains(&x) && (14..=17).contains(&y));
+                let (red, green, blue) = if white_mark { (255, 255, 255) } else { color };
+                rgba.extend_from_slice(&[red, green, blue, 255]);
+            } else {
+                rgba.extend_from_slice(&[0, 0, 0, 0]);
+            }
+        }
+    }
+    (rgba, size, size)
+}
+
+fn to_wide(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
 struct WindowsHotkeyThread {
     sender: mpsc::Sender<Hotkey>,
     stop: Arc<AtomicBool>,
+    available: Arc<AtomicBool>,
 }
 
 impl WindowsHotkeyThread {
     fn start(toggle_requested: Arc<AtomicBool>, initial: Hotkey) -> Self {
         let (sender, receiver) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
+        let available = Arc::new(AtomicBool::new(true));
         let thread_stop = Arc::clone(&stop);
+        let thread_available = Arc::clone(&available);
         thread::spawn(move || unsafe {
             let mut message: MSG = zeroed();
             PeekMessageW(&mut message, ptr::null_mut(), 0, 0, PM_REMOVE);
             let mut current = initial;
-            RegisterHotKey(ptr::null_mut(), 1, 0x4000, current.virtual_key());
+            thread_available.store(
+                RegisterHotKey(ptr::null_mut(), 1, 0x4000, current.virtual_key()) != 0,
+                Ordering::Release,
+            );
             while !thread_stop.load(Ordering::Acquire) {
                 while let Ok(next) = receiver.try_recv() {
                     UnregisterHotKey(ptr::null_mut(), 1);
                     current = next;
-                    RegisterHotKey(ptr::null_mut(), 1, 0x4000, current.virtual_key());
+                    thread_available.store(
+                        RegisterHotKey(ptr::null_mut(), 1, 0x4000, current.virtual_key()) != 0,
+                        Ordering::Release,
+                    );
                 }
                 while PeekMessageW(
                     &mut message,
@@ -790,16 +1186,41 @@ impl WindowsHotkeyThread {
             }
             UnregisterHotKey(ptr::null_mut(), 1);
         });
-        Self { sender, stop }
+        Self {
+            sender,
+            stop,
+            available,
+        }
     }
 
     fn set(&self, hotkey: Hotkey) {
         let _ = self.sender.send(hotkey);
+    }
+
+    fn available(&self) -> bool {
+        self.available.load(Ordering::Acquire)
     }
 }
 
 impl Drop for WindowsHotkeyThread {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{duration_ms, format_duration, split_duration};
+
+    #[test]
+    fn duration_units_round_trip() {
+        assert_eq!(duration_ms(10, 1), 600_000);
+        assert_eq!(split_duration(600_000), (10, 1));
+    }
+
+    #[test]
+    fn remaining_time_is_readable() {
+        assert_eq!(format_duration(3_661_000), "1:01:01");
+        assert_eq!(format_duration(9_001), "0:10");
     }
 }

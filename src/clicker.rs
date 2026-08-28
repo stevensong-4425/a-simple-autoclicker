@@ -14,6 +14,7 @@ use crate::{
 
 pub struct ClickEngine {
     active: AtomicBool,
+    run_generation: AtomicU64,
     interval_ms: AtomicU64,
     duration_ms: AtomicU64,
     remaining_ms: AtomicU64,
@@ -29,6 +30,7 @@ impl ClickEngine {
     pub fn start() -> Arc<Self> {
         let engine = Arc::new(Self {
             active: AtomicBool::new(false),
+            run_generation: AtomicU64::new(0),
             interval_ms: AtomicU64::new(100),
             duration_ms: AtomicU64::new(0),
             remaining_ms: AtomicU64::new(0),
@@ -52,6 +54,7 @@ impl ClickEngine {
     pub fn set_active(&self, active: bool) {
         if active {
             self.completed_run.store(false, Ordering::Release);
+            self.run_generation.fetch_add(1, Ordering::AcqRel);
         }
         self.active.store(active, Ordering::Release);
     }
@@ -61,6 +64,7 @@ impl ClickEngine {
         let was_active = self.active.fetch_xor(true, Ordering::AcqRel);
         if !was_active {
             self.completed_run.store(false, Ordering::Release);
+            self.run_generation.fetch_add(1, Ordering::AcqRel);
         }
     }
 
@@ -139,6 +143,7 @@ impl ClickEngine {
         let mut stop_at = None;
         let mut action_limit = 0;
         let mut actions_completed = 0;
+        let mut generation = 0;
 
         loop {
             if !self.is_active() {
@@ -150,10 +155,12 @@ impl ClickEngine {
                 continue;
             }
 
-            // Let the GTK main loop hide the Start button before a synthetic
-            // mouse click is delivered at the current pointer position.
-            if !was_active {
+            // Let the desktop UI update before a synthetic mouse click is
+            // delivered at the current pointer position.
+            let current_generation = self.run_generation.load(Ordering::Acquire);
+            if !was_active || current_generation != generation {
                 was_active = true;
+                generation = current_generation;
                 thread::sleep(Duration::from_millis(150));
                 if !self.is_active() {
                     continue;
@@ -188,19 +195,40 @@ impl ClickEngine {
             if let Err(error) = backend.perform(action, position) {
                 *self.backend_error.write().expect("error lock poisoned") = Some(error);
                 self.set_active(false);
-            } else if action_limit > 0 {
-                actions_completed += 1;
-                let remaining = action_limit.saturating_sub(actions_completed);
-                self.remaining_actions.store(remaining, Ordering::Release);
-                if remaining == 0 {
-                    self.active.store(false, Ordering::Release);
-                    self.completed_run.store(true, Ordering::Release);
-                    continue;
+            } else {
+                let had_backend_error = self
+                    .backend_error
+                    .read()
+                    .expect("error lock poisoned")
+                    .is_some();
+                if had_backend_error {
+                    *self.backend_error.write().expect("error lock poisoned") = None;
+                }
+                if action_limit > 0 {
+                    actions_completed += 1;
+                    let remaining = action_limit.saturating_sub(actions_completed);
+                    self.remaining_actions.store(remaining, Ordering::Release);
+                    if remaining == 0 {
+                        self.active.store(false, Ordering::Release);
+                        self.completed_run.store(true, Ordering::Release);
+                        continue;
+                    }
                 }
             }
 
-            let interval = Duration::from_millis(self.interval_ms.load(Ordering::Acquire));
-            thread::sleep(interval.saturating_sub(started.elapsed()));
+            let sleep_until = Instant::now()
+                + Duration::from_millis(self.interval_ms.load(Ordering::Acquire))
+                    .saturating_sub(started.elapsed());
+            while Instant::now() < sleep_until {
+                if !self.is_active() || self.run_generation.load(Ordering::Acquire) != generation {
+                    break;
+                }
+                thread::sleep(
+                    sleep_until
+                        .saturating_duration_since(Instant::now())
+                        .min(Duration::from_millis(10)),
+                );
+            }
         }
     }
 }

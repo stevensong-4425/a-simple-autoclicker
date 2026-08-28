@@ -29,7 +29,7 @@ fn main() {
 #[cfg(target_os = "windows")]
 fn main() {
     if let Err(error) = windows_app::run() {
-        native_windows_gui::fatal_message("A Simple Autoclicker", &error);
+        windows_app::show_fatal_error(&error);
     }
 }
 

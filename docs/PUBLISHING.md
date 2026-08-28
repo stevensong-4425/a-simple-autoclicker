@@ -26,13 +26,13 @@ and commit the changes. Then create and push a matching version tag:
 
 ```bash
 git add .
-git commit -m "Release version 0.1.1"
-git tag v0.1.1
+git commit -m "Release version 0.1.2"
+git tag v0.1.2
 git push origin main
-git push origin v0.1.1
+git push origin v0.1.2
 ```
 
-Replace `0.1.1` with the version being released. Pushing a tag beginning with
+Replace `0.1.2` with the version being released. Pushing a tag beginning with
 `v` starts the Windows workflow. When it succeeds, the workflow creates the
 GitHub release, generates release notes, and attaches both Windows downloads.
 
