@@ -15,7 +15,7 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -51,7 +51,7 @@ jobs:
         run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" packaging\windows\installer.iss'
 
       - name: Upload downloadable builds
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-windows-x64
           path: |
@@ -64,7 +64,7 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -86,7 +86,7 @@ jobs:
         run: ./scripts/build-deb.sh
 
       - name: Upload Debian package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-linux-amd64
           path: dist/a-simple-autoclicker_*_amd64.deb
@@ -101,7 +101,7 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Check tag matches application version
         run: |
@@ -109,25 +109,19 @@ jobs:
           test "${GITHUB_REF_NAME}" = "v${version}"
 
       - name: Download release files
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: release-*
           path: dist
           merge-multiple: true
 
       - name: Publish tagged GitHub release
-        if: startsWith(github.ref, 'refs/tags/')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if gh release view "${GITHUB_REF_NAME}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            gh release upload "${GITHUB_REF_NAME}" \
-              dist/*.zip dist/*.exe dist/*.deb \
-              --clobber \
-              --repo "${{ github.repository }}"
-          } else {
-            gh release create "${GITHUB_REF_NAME}" \
-              dist/*.zip dist/*.exe dist/*.deb \
-              --generate-notes \
-              --repo "${{ github.repository }}"
-          fi
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          overwrite_files: true
+          files: |
+            dist/*.zip
+            dist/*.exe
+            dist/*.deb
