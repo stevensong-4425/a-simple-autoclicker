@@ -2,7 +2,7 @@ use std::{
     mem::zeroed,
     ptr,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
         mpsc, Arc,
     },
     thread,
@@ -22,7 +22,8 @@ use windows_sys::Win32::UI::{
         GetAsyncKeyState, RegisterHotKey, UnregisterHotKey, VK_CONTROL, VK_LWIN, VK_MENU, VK_SHIFT,
     },
     WindowsAndMessaging::{
-        MessageBoxW, PeekMessageW, MB_ICONERROR, MB_OK, MSG, PM_REMOVE, WM_HOTKEY,
+        FindWindowW, MessageBoxW, PeekMessageW, PostQuitMessage, SetForegroundWindow, ShowWindow,
+        MB_ICONERROR, MB_OK, MSG, PM_REMOVE, SW_RESTORE, WM_HOTKEY,
     },
 };
 
@@ -37,6 +38,9 @@ const APP_TITLE: &str = "A Simple Autoclicker";
 const BLUE: Color32 = Color32::from_rgb(28, 126, 224);
 const TEXT: Color32 = Color32::from_rgb(48, 48, 48);
 const MUTED: Color32 = Color32::from_rgb(145, 145, 145);
+const TRAY_SHOW: u8 = 1;
+const TRAY_TOGGLE: u8 = 1 << 1;
+const TRAY_QUIT: u8 = 1 << 2;
 
 pub fn run() -> Result<(), String> {
     let icon = app_icon(false);
@@ -98,9 +102,8 @@ struct WindowsApp {
     preset_name: String,
     status_message: Option<String>,
     tray_icon: Option<TrayIcon>,
-    tray_show: MenuItem,
+    pending_tray_commands: Arc<AtomicU8>,
     tray_toggle: MenuItem,
-    tray_quit: MenuItem,
     tray_active: bool,
     allow_close: bool,
     was_minimized: bool,
@@ -135,6 +138,14 @@ impl WindowsApp {
                     .build()
                     .ok()
             });
+        let pending_tray_commands = Arc::new(AtomicU8::new(0));
+        install_tray_event_handlers(
+            &context.egui_ctx,
+            Arc::clone(&pending_tray_commands),
+            &tray_show,
+            &tray_toggle,
+            &tray_quit,
+        );
         let status_message = tray_icon
             .is_none()
             .then(|| "The system tray icon could not be created.".to_string());
@@ -161,9 +172,8 @@ impl WindowsApp {
             preset_name: String::new(),
             status_message,
             tray_icon,
-            tray_show,
+            pending_tray_commands,
             tray_toggle,
-            tray_quit,
             tray_active: false,
             allow_close: false,
             was_minimized: false,
@@ -191,29 +201,19 @@ impl WindowsApp {
     }
 
     fn process_tray_events(&mut self, ctx: &egui::Context) {
-        while let Ok(event) = TrayIconEvent::receiver().try_recv() {
-            if matches!(
-                event,
-                TrayIconEvent::Click {
-                    button: MouseButton::Left,
-                    button_state: MouseButtonState::Up,
-                    ..
-                }
-            ) {
-                self.show_window(ctx);
-            }
+        let commands = self.pending_tray_commands.swap(0, Ordering::AcqRel);
+        if commands & TRAY_QUIT != 0 {
+            self.allow_close = true;
+            self.engine.set_active(false);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
         }
-        while let Ok(event) = MenuEvent::receiver().try_recv() {
-            if event.id() == self.tray_show.id() {
-                self.show_window(ctx);
-            } else if event.id() == self.tray_toggle.id() {
-                self.toggle_clicking();
-            } else if event.id() == self.tray_quit.id() {
-                self.allow_close = true;
-                self.engine.set_active(false);
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
+        if commands & TRAY_SHOW != 0 {
+            self.show_window(ctx);
+        }
+        if commands & TRAY_TOGGLE != 0 {
+            self.toggle_clicking();
         }
     }
 
@@ -824,6 +824,70 @@ fn configure_style(ctx: &egui::Context) {
     style.visuals.widgets.active.rounding = Rounding::same(7.0);
     style.visuals.selection.bg_fill = BLUE;
     ctx.set_style(style);
+}
+
+fn install_tray_event_handlers(
+    ctx: &egui::Context,
+    pending_commands: Arc<AtomicU8>,
+    show: &MenuItem,
+    toggle: &MenuItem,
+    quit: &MenuItem,
+) {
+    let show_id = show.id().clone();
+    let toggle_id = toggle.id().clone();
+    let quit_id = quit.id().clone();
+    let menu_commands = Arc::clone(&pending_commands);
+    let menu_context = ctx.clone();
+    MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
+        let command = if event.id() == &show_id {
+            TRAY_SHOW
+        } else if event.id() == &toggle_id {
+            TRAY_TOGGLE
+        } else if event.id() == &quit_id {
+            TRAY_QUIT
+        } else {
+            return;
+        };
+        if command == TRAY_SHOW {
+            restore_native_window();
+        } else if command == TRAY_QUIT {
+            // Menu callbacks run on the Windows event-loop thread. Posting
+            // WM_QUIT exits cleanly even while the eframe window is hidden.
+            unsafe { PostQuitMessage(0) };
+            return;
+        }
+        menu_commands.fetch_or(command, Ordering::Release);
+        // A hidden eframe window does not receive periodic redraws on Windows.
+        // Explicitly wake its event loop so the queued command is processed.
+        menu_context.request_repaint();
+    }));
+
+    let tray_context = ctx.clone();
+    TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
+        if matches!(
+            event,
+            TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            }
+        ) {
+            restore_native_window();
+            pending_commands.fetch_or(TRAY_SHOW, Ordering::Release);
+            tray_context.request_repaint();
+        }
+    }));
+}
+
+fn restore_native_window() {
+    let title = to_wide(APP_TITLE);
+    unsafe {
+        let window = FindWindowW(ptr::null(), title.as_ptr());
+        if !window.is_null() {
+            ShowWindow(window, SW_RESTORE);
+            SetForegroundWindow(window);
+        }
+    }
 }
 
 fn group_heading(ui: &mut egui::Ui, title: &str) {
