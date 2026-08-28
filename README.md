@@ -147,7 +147,7 @@ On Windows, presets are stored under
 - `src/tray.rs` — StatusNotifier system tray integration
 - `scripts/build-deb.sh` — Debian package builder
 - `scripts/build-windows.ps1` — local portable Windows builder
-- `.github/workflows/windows-release.yml` — Windows installer/release automation
+- `.github/workflows/windows-release.yml` — Windows and Debian release automation
 
 The platform interfaces and input backends are separated from the shared click
 engine, models, limits, and preset storage. This keeps future Wayland support

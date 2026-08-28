@@ -1,4 +1,4 @@
-name: Build Windows release
+name: Build release
 
 on:
   workflow_dispatch:
@@ -53,25 +53,81 @@ jobs:
       - name: Upload downloadable builds
         uses: actions/upload-artifact@v4
         with:
-          name: A-Simple-Autoclicker-Windows-x64
+          name: release-windows-x64
           path: |
             dist/A-Simple-Autoclicker-Windows-x64.zip
             dist/A-Simple-Autoclicker-Setup-*-x64.exe
           if-no-files-found: error
 
+  linux:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            libadwaita-1-dev \
+            libgtk-4-dev \
+            libx11-dev \
+            libxtst-dev \
+            pkg-config
+
+      - name: Test
+        run: cargo test
+
+      - name: Build Debian package
+        run: ./scripts/build-deb.sh
+
+      - name: Upload Debian package
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-amd64
+          path: dist/a-simple-autoclicker_*_amd64.deb
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs:
+      - windows
+      - linux
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Check tag matches application version
+        run: |
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+          test "${GITHUB_REF_NAME}" = "v${version}"
+
+      - name: Download release files
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
       - name: Publish tagged GitHub release
         if: startsWith(github.ref, 'refs/tags/')
-        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "${{ github.ref_name }}"
-          $portable = Resolve-Path dist\A-Simple-Autoclicker-Windows-x64.zip
-          $installer = Get-ChildItem dist\A-Simple-Autoclicker-Setup-*-x64.exe | Select-Object -First 1
-          if (-not $installer) { throw "The Setup executable was not created" }
-          gh release view $tag --repo "${{ github.repository }}" *> $null
-          if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag $portable $installer.FullName --clobber --repo "${{ github.repository }}"
+          if gh release view "${GITHUB_REF_NAME}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" \
+              dist/*.zip dist/*.exe dist/*.deb \
+              --clobber \
+              --repo "${{ github.repository }}"
           } else {
-            gh release create $tag $portable $installer.FullName --generate-notes --repo "${{ github.repository }}"
-          }
+            gh release create "${GITHUB_REF_NAME}" \
+              dist/*.zip dist/*.exe dist/*.deb \
+              --generate-notes \
+              --repo "${{ github.repository }}"
+          fi
