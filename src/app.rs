@@ -19,6 +19,13 @@ use crate::{
 };
 
 pub fn build_ui(application: &adw::Application) {
+    // GTK forwards a second launch to this application's activation handler.
+    // Reuse and reveal the existing window instead of constructing another one.
+    if let Some(window) = application.windows().into_iter().next() {
+        window.present();
+        return;
+    }
+
     let engine = ClickEngine::start();
     let hotkeys = Rc::new(HotkeyManager::start(Arc::clone(&engine), Hotkey::F8));
     let (tray_sender, tray_receiver) = mpsc::channel();
@@ -238,7 +245,7 @@ pub fn build_ui(application: &adw::Application) {
         .application(application)
         .title("A Simple Autoclicker")
         .default_width(760)
-        .default_height(900)
+        .default_height(1040)
         .content(&toolbar)
         .build();
 

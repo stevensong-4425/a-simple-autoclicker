@@ -17,20 +17,25 @@ use tray_icon::{
     menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
     MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent,
 };
-use windows_sys::Win32::UI::{
-    Input::KeyboardAndMouse::{
-        GetAsyncKeyState, RegisterHotKey, UnregisterHotKey, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN,
-        VK_SHIFT,
-    },
-    WindowsAndMessaging::{
-        FindWindowW, MessageBoxW, PeekMessageW, SetForegroundWindow, ShowWindow, MB_ICONERROR,
-        MB_OK, MSG, PM_REMOVE, SW_RESTORE, WM_HOTKEY,
+use windows_sys::Win32::{
+    Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE},
+    System::Threading::CreateMutexW,
+    UI::{
+        Input::KeyboardAndMouse::{
+            GetAsyncKeyState, RegisterHotKey, UnregisterHotKey, VK_CONTROL, VK_LWIN, VK_MENU,
+            VK_RWIN, VK_SHIFT,
+        },
+        WindowsAndMessaging::{
+            FindWindowW, MessageBoxW, PeekMessageW, SetForegroundWindow, ShowWindow, MB_ICONERROR,
+            MB_OK, MSG, PM_REMOVE, SW_RESTORE, WM_HOTKEY,
+        },
     },
 };
 
 use crate::{
     backend,
     clicker::ClickEngine,
+    icon::mouse_rgba,
     model::{Action, Hotkey, KeyModifiers},
     presets::{Preset, PresetStore},
 };
@@ -41,15 +46,18 @@ const TEXT: Color32 = Color32::from_rgb(48, 48, 48);
 const MUTED: Color32 = Color32::from_rgb(145, 145, 145);
 
 pub fn run() -> Result<(), String> {
-    let icon = app_icon(false);
+    let Some(_single_instance) = acquire_single_instance()? else {
+        return Ok(());
+    };
+    let icon_size = 64;
     let viewport_icon = egui::IconData {
-        rgba: icon.0.clone(),
-        width: icon.1,
-        height: icon.2,
+        rgba: mouse_rgba(icon_size, false),
+        width: icon_size,
+        height: icon_size,
     };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([760.0, 820.0])
+            .with_inner_size([760.0, 1040.0])
             .with_min_inner_size([620.0, 560.0])
             .with_icon(viewport_icon),
         follow_system_theme: false,
@@ -123,11 +131,12 @@ impl WindowsApp {
         let tray_quit = MenuItem::new("Quit", true, None);
         let separator = PredefinedMenuItem::separator();
         let tray_menu = Menu::with_items(&[&tray_show, &tray_toggle, &separator, &tray_quit]);
-        let (idle_rgba, width, height) = app_icon(false);
+        let icon_size = 32;
+        let idle_rgba = mouse_rgba(icon_size, false);
         let tray_icon = tray_menu
             .ok()
             .and_then(|menu| {
-                tray_icon::Icon::from_rgba(idle_rgba, width, height)
+                tray_icon::Icon::from_rgba(idle_rgba, icon_size, icon_size)
                     .ok()
                     .map(|icon| (menu, icon))
             })
@@ -283,8 +292,10 @@ impl WindowsApp {
                 "Start clicking"
             });
             if let Some(tray_icon) = &self.tray_icon {
-                let (rgba, width, height) = app_icon(active);
-                if let Ok(icon) = tray_icon::Icon::from_rgba(rgba, width, height) {
+                let icon_size = 32;
+                if let Ok(icon) =
+                    tray_icon::Icon::from_rgba(mouse_rgba(icon_size, active), icon_size, icon_size)
+                {
                     let _ = tray_icon.set_icon(Some(icon));
                 }
                 let _ = tray_icon.set_tooltip(Some(if active {
@@ -871,14 +882,55 @@ fn install_tray_event_handlers(
     }));
 }
 
-fn restore_native_window() {
+fn restore_native_window() -> bool {
     let title = to_wide(APP_TITLE);
     unsafe {
         let window = FindWindowW(ptr::null(), title.as_ptr());
         if !window.is_null() {
             ShowWindow(window, SW_RESTORE);
             SetForegroundWindow(window);
+            return true;
         }
+    }
+    false
+}
+
+struct SingleInstance(HANDLE);
+
+impl Drop for SingleInstance {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.0);
+        }
+    }
+}
+
+fn acquire_single_instance() -> Result<Option<SingleInstance>, String> {
+    let name = to_wide("Local\\A-Simple-Autoclicker-Single-Instance");
+    let handle = unsafe { CreateMutexW(ptr::null(), 0, name.as_ptr()) };
+    if handle.is_null() {
+        return Err(format!(
+            "Could not create the single-instance guard: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        unsafe {
+            CloseHandle(handle);
+        }
+        // A second launch can race the first window's creation by a few
+        // milliseconds. Brief retries let it reveal the original window even
+        // during startup, without allowing a duplicate process to continue.
+        for _ in 0..20 {
+            if restore_native_window() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        Ok(None)
+    } else {
+        Ok(Some(SingleInstance(handle)))
     }
 }
 
@@ -1184,33 +1236,6 @@ fn key_label(key: u32, modifiers: KeyModifiers) -> String {
     };
     pieces.push(key_name);
     pieces.join("+")
-}
-
-fn app_icon(active: bool) -> (Vec<u8>, u32, u32) {
-    let size = 32u32;
-    let center = (size - 1) as f32 / 2.0;
-    let radius = center - 1.0;
-    let color = if active {
-        (224, 42, 42)
-    } else {
-        (28, 126, 224)
-    };
-    let mut rgba = Vec::with_capacity((size * size * 4) as usize);
-    for y in 0..size {
-        for x in 0..size {
-            let dx = x as f32 - center;
-            let dy = y as f32 - center;
-            if dx * dx + dy * dy <= radius * radius {
-                let white_mark = ((14..=17).contains(&x) && (7..=23).contains(&y))
-                    || ((10..=21).contains(&x) && (14..=17).contains(&y));
-                let (red, green, blue) = if white_mark { (255, 255, 255) } else { color };
-                rgba.extend_from_slice(&[red, green, blue, 255]);
-            } else {
-                rgba.extend_from_slice(&[0, 0, 0, 0]);
-            }
-        }
-    }
-    (rgba, size, size)
 }
 
 fn to_wide(text: &str) -> Vec<u16> {

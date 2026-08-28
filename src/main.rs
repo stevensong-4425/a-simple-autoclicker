@@ -4,6 +4,7 @@
 mod app;
 mod backend;
 mod clicker;
+mod icon;
 #[cfg(target_os = "linux")]
 mod hotkey;
 mod model;

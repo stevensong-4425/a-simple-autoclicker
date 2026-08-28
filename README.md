@@ -17,6 +17,7 @@ screen position, save presets, and remain available from the system tray.
 - Configurable F6–F12 global start/stop hotkey
 - Named presets saved between launches
 - System tray controls for showing, starting, stopping, and quitting the app
+- Single-instance launch behavior that restores the already-running app
 - Modern interface on both GTK4/libadwaita (Linux) and Windows
 
 ## Install on Windows
@@ -99,7 +100,7 @@ under `dist/`:
 
 ```bash
 ./scripts/build-deb.sh
-sudo apt install ./dist/a-simple-autoclicker_0.1.8_amd64.deb
+sudo apt install ./dist/a-simple-autoclicker_0.1.9_amd64.deb
 ```
 
 The script automatically reads the version from `Cargo.toml` and the architecture
