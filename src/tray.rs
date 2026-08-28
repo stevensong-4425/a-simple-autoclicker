@@ -117,6 +117,13 @@ fn tray_icon(size: i32, active: bool) -> ksni::Icon {
     }
 }
 
+pub fn start(engine: Arc<ClickEngine>, sender: Sender<TrayCommand>) -> TrayHandle {
+    let service = ksni::TrayService::new(AutoclickerTray { engine, sender });
+    let handle = TrayHandle(service.handle());
+    service.spawn();
+    handle
+}
+
 #[cfg(test)]
 mod tests {
     use super::tray_icon;
@@ -129,11 +136,4 @@ mod tests {
             .chunks_exact(4)
             .any(|pixel| pixel[0] == 255 && pixel[1] > 200 && pixel[2] < 80));
     }
-}
-
-pub fn start(engine: Arc<ClickEngine>, sender: Sender<TrayCommand>) -> TrayHandle {
-    let service = ksni::TrayService::new(AutoclickerTray { engine, sender });
-    let handle = TrayHandle(service.handle());
-    service.spawn();
-    handle
 }

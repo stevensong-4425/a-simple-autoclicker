@@ -2,7 +2,7 @@ use std::{
     mem::zeroed,
     ptr,
     sync::{
-        atomic::{AtomicBool, AtomicU8, Ordering},
+        atomic::{AtomicBool, Ordering},
         mpsc, Arc,
     },
     thread,
@@ -19,12 +19,12 @@ use tray_icon::{
 };
 use windows_sys::Win32::UI::{
     Input::KeyboardAndMouse::{
-        GetAsyncKeyState, RegisterHotKey, UnregisterHotKey, VK_CONTROL, VK_LWIN, VK_MENU, VK_SHIFT,
+        GetAsyncKeyState, RegisterHotKey, UnregisterHotKey, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN,
+        VK_SHIFT,
     },
     WindowsAndMessaging::{
-        FindWindowW, GetWindowThreadProcessId, MessageBoxW, PeekMessageW, PostThreadMessageW,
-        SetForegroundWindow, ShowWindow, MB_ICONERROR, MB_OK, MSG, PM_REMOVE, SW_RESTORE,
-        WM_HOTKEY, WM_QUIT,
+        FindWindowW, MessageBoxW, PeekMessageW, SetForegroundWindow, ShowWindow, MB_ICONERROR,
+        MB_OK, MSG, PM_REMOVE, SW_RESTORE, WM_HOTKEY,
     },
 };
 
@@ -39,7 +39,6 @@ const APP_TITLE: &str = "A Simple Autoclicker";
 const BLUE: Color32 = Color32::from_rgb(28, 126, 224);
 const TEXT: Color32 = Color32::from_rgb(48, 48, 48);
 const MUTED: Color32 = Color32::from_rgb(145, 145, 145);
-const TRAY_SHOW: u8 = 1;
 
 pub fn run() -> Result<(), String> {
     let icon = app_icon(false);
@@ -101,7 +100,7 @@ struct WindowsApp {
     preset_name: String,
     status_message: Option<String>,
     tray_icon: Option<TrayIcon>,
-    pending_tray_commands: Arc<AtomicU8>,
+    tray_show_requested: Arc<AtomicBool>,
     tray_toggle: MenuItem,
     tray_active: bool,
     was_minimized: bool,
@@ -141,19 +140,19 @@ impl WindowsApp {
                     .build()
                     .ok()
             });
-        let pending_tray_commands = Arc::new(AtomicU8::new(0));
+        let tray_available = tray_icon.is_some();
+        let tray_show_requested = Arc::new(AtomicBool::new(false));
         install_tray_event_handlers(
             &context.egui_ctx,
-            Arc::clone(&pending_tray_commands),
+            Arc::clone(&tray_show_requested),
             &tray_show,
             &tray_toggle,
             &tray_quit,
             Arc::clone(&engine),
             Arc::clone(&external_settings_valid),
         );
-        let status_message = tray_icon
-            .is_none()
-            .then(|| "The system tray icon could not be created.".to_string());
+        let status_message =
+            (!tray_available).then(|| "The system tray icon could not be created.".to_string());
 
         Self {
             engine,
@@ -172,12 +171,12 @@ impl WindowsApp {
             fixed_position: false,
             capture_at: None,
             hotkey_index: 2,
-            tray_mode: true,
+            tray_mode: tray_available,
             preset_index: None,
             preset_name: String::new(),
             status_message,
             tray_icon,
-            pending_tray_commands,
+            tray_show_requested,
             tray_toggle,
             tray_active: false,
             was_minimized: false,
@@ -205,8 +204,7 @@ impl WindowsApp {
     }
 
     fn process_tray_events(&mut self, ctx: &egui::Context) {
-        let commands = self.pending_tray_commands.swap(0, Ordering::AcqRel);
-        if commands & TRAY_SHOW != 0 {
+        if self.tray_show_requested.swap(false, Ordering::AcqRel) {
             self.show_window(ctx);
         }
     }
@@ -235,7 +233,7 @@ impl WindowsApp {
                 shift: modifiers.shift || key_is_down(VK_SHIFT as i32),
                 control: modifiers.ctrl || key_is_down(VK_CONTROL as i32),
                 alt: modifiers.alt || key_is_down(VK_MENU as i32),
-                super_key: key_is_down(VK_LWIN as i32),
+                super_key: key_is_down(VK_LWIN as i32) || key_is_down(VK_RWIN as i32),
             };
             let hotkey = Hotkey::ALL[self.hotkey_index];
             if virtual_key == hotkey.virtual_key() && modifiers == KeyModifiers::default() {
@@ -827,7 +825,7 @@ fn configure_style(ctx: &egui::Context) {
 
 fn install_tray_event_handlers(
     ctx: &egui::Context,
-    pending_commands: Arc<AtomicU8>,
+    show_requested: Arc<AtomicBool>,
     show: &MenuItem,
     toggle: &MenuItem,
     quit: &MenuItem,
@@ -837,20 +835,19 @@ fn install_tray_event_handlers(
     let show_id = show.id().clone();
     let toggle_id = toggle.id().clone();
     let quit_id = quit.id().clone();
-    let menu_commands = Arc::clone(&pending_commands);
+    let menu_show_requested = Arc::clone(&show_requested);
     let menu_context = ctx.clone();
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
         if event.id() == &show_id {
             restore_native_window();
-            menu_commands.fetch_or(TRAY_SHOW, Ordering::Release);
+            menu_show_requested.store(true, Ordering::Release);
         } else if event.id() == &toggle_id {
             if !toggle_engine(&engine, &settings_valid) {
                 restore_native_window();
-                menu_commands.fetch_or(TRAY_SHOW, Ordering::Release);
+                menu_show_requested.store(true, Ordering::Release);
             }
         } else if event.id() == &quit_id {
-            engine.set_active(false);
-            quit_native_app();
+            quit_process(&engine);
         } else {
             return;
         }
@@ -868,7 +865,7 @@ fn install_tray_event_handlers(
             }
         ) {
             restore_native_window();
-            pending_commands.fetch_or(TRAY_SHOW, Ordering::Release);
+            show_requested.store(true, Ordering::Release);
             tray_context.request_repaint();
         }
     }));
@@ -885,17 +882,13 @@ fn restore_native_window() {
     }
 }
 
-fn quit_native_app() {
-    let title = to_wide(APP_TITLE);
-    unsafe {
-        let window = FindWindowW(ptr::null(), title.as_ptr());
-        if !window.is_null() {
-            let thread_id = GetWindowThreadProcessId(window, ptr::null_mut());
-            if thread_id != 0 {
-                PostThreadMessageW(thread_id, WM_QUIT, 0, 0);
-            }
-        }
-    }
+#[allow(clippy::exit)]
+fn quit_process(engine: &ClickEngine) -> ! {
+    // Hidden eframe windows do not reliably process close or quit messages on
+    // every supported Windows version. Presets are persisted when saved, so a
+    // direct process exit is safe here and guarantees that Quit means Quit.
+    engine.set_active(false);
+    std::process::exit(0)
 }
 
 fn toggle_engine(engine: &ClickEngine, settings_valid: &AtomicBool) -> bool {

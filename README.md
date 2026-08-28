@@ -99,7 +99,7 @@ under `dist/`:
 
 ```bash
 ./scripts/build-deb.sh
-sudo apt install ./dist/a-simple-autoclicker_0.1.7_amd64.deb
+sudo apt install ./dist/a-simple-autoclicker_0.1.8_amd64.deb
 ```
 
 The script automatically reads the version from `Cargo.toml` and the architecture
