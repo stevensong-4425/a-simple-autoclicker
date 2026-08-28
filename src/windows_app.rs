@@ -22,8 +22,9 @@ use windows_sys::Win32::UI::{
         GetAsyncKeyState, RegisterHotKey, UnregisterHotKey, VK_CONTROL, VK_LWIN, VK_MENU, VK_SHIFT,
     },
     WindowsAndMessaging::{
-        FindWindowW, MessageBoxW, PeekMessageW, PostQuitMessage, SetForegroundWindow, ShowWindow,
-        MB_ICONERROR, MB_OK, MSG, PM_REMOVE, SW_RESTORE, WM_HOTKEY,
+        FindWindowW, GetWindowThreadProcessId, MessageBoxW, PeekMessageW, PostThreadMessageW,
+        SetForegroundWindow, ShowWindow, MB_ICONERROR, MB_OK, MSG, PM_REMOVE, SW_RESTORE,
+        WM_HOTKEY, WM_QUIT,
     },
 };
 
@@ -39,8 +40,6 @@ const BLUE: Color32 = Color32::from_rgb(28, 126, 224);
 const TEXT: Color32 = Color32::from_rgb(48, 48, 48);
 const MUTED: Color32 = Color32::from_rgb(145, 145, 145);
 const TRAY_SHOW: u8 = 1;
-const TRAY_TOGGLE: u8 = 1 << 1;
-const TRAY_QUIT: u8 = 1 << 2;
 
 pub fn run() -> Result<(), String> {
     let icon = app_icon(false);
@@ -83,7 +82,7 @@ pub fn show_fatal_error(error: &str) {
 struct WindowsApp {
     engine: Arc<ClickEngine>,
     hotkey_thread: WindowsHotkeyThread,
-    hotkey_toggle: Arc<AtomicBool>,
+    external_settings_valid: Arc<AtomicBool>,
     presets: PresetStore,
     action_index: usize,
     recorded_key: Option<(u32, KeyModifiers)>,
@@ -105,7 +104,6 @@ struct WindowsApp {
     pending_tray_commands: Arc<AtomicU8>,
     tray_toggle: MenuItem,
     tray_active: bool,
-    allow_close: bool,
     was_minimized: bool,
 }
 
@@ -113,8 +111,13 @@ impl WindowsApp {
     fn new(context: &eframe::CreationContext<'_>) -> Self {
         configure_style(&context.egui_ctx);
         let engine = ClickEngine::start();
-        let hotkey_toggle = Arc::new(AtomicBool::new(false));
-        let hotkey_thread = WindowsHotkeyThread::start(Arc::clone(&hotkey_toggle), Hotkey::F8);
+        let external_settings_valid = Arc::new(AtomicBool::new(true));
+        let hotkey_thread = WindowsHotkeyThread::start(
+            Arc::clone(&engine),
+            Arc::clone(&external_settings_valid),
+            context.egui_ctx.clone(),
+            Hotkey::F8,
+        );
 
         let tray_show = MenuItem::new("Show window", true, None);
         let tray_toggle = MenuItem::new("Start clicking", true, None);
@@ -145,6 +148,8 @@ impl WindowsApp {
             &tray_show,
             &tray_toggle,
             &tray_quit,
+            Arc::clone(&engine),
+            Arc::clone(&external_settings_valid),
         );
         let status_message = tray_icon
             .is_none()
@@ -153,7 +158,7 @@ impl WindowsApp {
         Self {
             engine,
             hotkey_thread,
-            hotkey_toggle,
+            external_settings_valid,
             presets: PresetStore::load(),
             action_index: 0,
             recorded_key: None,
@@ -175,7 +180,6 @@ impl WindowsApp {
             pending_tray_commands,
             tray_toggle,
             tray_active: false,
-            allow_close: false,
             was_minimized: false,
         }
     }
@@ -187,7 +191,7 @@ impl WindowsApp {
                 input.viewport().minimized.unwrap_or(false),
             )
         });
-        if close_requested && self.tray_mode && !self.allow_close {
+        if close_requested && self.tray_mode {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             self.status_message = Some("Hidden in the system tray.".into());
@@ -202,18 +206,8 @@ impl WindowsApp {
 
     fn process_tray_events(&mut self, ctx: &egui::Context) {
         let commands = self.pending_tray_commands.swap(0, Ordering::AcqRel);
-        if commands & TRAY_QUIT != 0 {
-            self.allow_close = true;
-            self.engine.set_active(false);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            return;
-        }
         if commands & TRAY_SHOW != 0 {
             self.show_window(ctx);
-        }
-        if commands & TRAY_TOGGLE != 0 {
-            self.toggle_clicking();
         }
     }
 
@@ -282,9 +276,6 @@ impl WindowsApp {
     }
 
     fn process_engine_state(&mut self) {
-        if self.hotkey_toggle.swap(false, Ordering::AcqRel) {
-            self.toggle_clicking();
-        }
         let active = self.engine.is_active();
         if active != self.tray_active {
             self.tray_active = active;
@@ -788,6 +779,14 @@ impl eframe::App for WindowsApp {
                     });
             });
 
+        // Global hotkeys and tray commands keep working when Windows stops
+        // repainting the hidden window, so keep their engine configuration in
+        // sync after every visible edit.
+        if !self.engine.is_active() {
+            self.external_settings_valid
+                .store(self.apply_settings().is_ok(), Ordering::Release);
+        }
+
         ctx.request_repaint_after(Duration::from_millis(
             if self.engine.is_active() || self.capture_at.is_some() {
                 50
@@ -832,6 +831,8 @@ fn install_tray_event_handlers(
     show: &MenuItem,
     toggle: &MenuItem,
     quit: &MenuItem,
+    engine: Arc<ClickEngine>,
+    settings_valid: Arc<AtomicBool>,
 ) {
     let show_id = show.id().clone();
     let toggle_id = toggle.id().clone();
@@ -839,26 +840,20 @@ fn install_tray_event_handlers(
     let menu_commands = Arc::clone(&pending_commands);
     let menu_context = ctx.clone();
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
-        let command = if event.id() == &show_id {
-            TRAY_SHOW
+        if event.id() == &show_id {
+            restore_native_window();
+            menu_commands.fetch_or(TRAY_SHOW, Ordering::Release);
         } else if event.id() == &toggle_id {
-            TRAY_TOGGLE
+            if !toggle_engine(&engine, &settings_valid) {
+                restore_native_window();
+                menu_commands.fetch_or(TRAY_SHOW, Ordering::Release);
+            }
         } else if event.id() == &quit_id {
-            TRAY_QUIT
+            engine.set_active(false);
+            quit_native_app();
         } else {
             return;
-        };
-        if command == TRAY_SHOW {
-            restore_native_window();
-        } else if command == TRAY_QUIT {
-            // Menu callbacks run on the Windows event-loop thread. Posting
-            // WM_QUIT exits cleanly even while the eframe window is hidden.
-            unsafe { PostQuitMessage(0) };
-            return;
         }
-        menu_commands.fetch_or(command, Ordering::Release);
-        // A hidden eframe window does not receive periodic redraws on Windows.
-        // Explicitly wake its event loop so the queued command is processed.
         menu_context.request_repaint();
     }));
 
@@ -887,6 +882,28 @@ fn restore_native_window() {
             ShowWindow(window, SW_RESTORE);
             SetForegroundWindow(window);
         }
+    }
+}
+
+fn quit_native_app() {
+    let title = to_wide(APP_TITLE);
+    unsafe {
+        let window = FindWindowW(ptr::null(), title.as_ptr());
+        if !window.is_null() {
+            let thread_id = GetWindowThreadProcessId(window, ptr::null_mut());
+            if thread_id != 0 {
+                PostThreadMessageW(thread_id, WM_QUIT, 0, 0);
+            }
+        }
+    }
+}
+
+fn toggle_engine(engine: &ClickEngine, settings_valid: &AtomicBool) -> bool {
+    if engine.is_active() || settings_valid.load(Ordering::Acquire) {
+        engine.toggle();
+        true
+    } else {
+        false
     }
 }
 
@@ -1214,7 +1231,12 @@ struct WindowsHotkeyThread {
 }
 
 impl WindowsHotkeyThread {
-    fn start(toggle_requested: Arc<AtomicBool>, initial: Hotkey) -> Self {
+    fn start(
+        engine: Arc<ClickEngine>,
+        settings_valid: Arc<AtomicBool>,
+        repaint_context: egui::Context,
+        initial: Hotkey,
+    ) -> Self {
         let (sender, receiver) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
         let available = Arc::new(AtomicBool::new(true));
@@ -1246,7 +1268,8 @@ impl WindowsHotkeyThread {
                 ) != 0
                 {
                     if message.message == WM_HOTKEY && message.wParam == 1 {
-                        toggle_requested.store(true, Ordering::Release);
+                        toggle_engine(&engine, &settings_valid);
+                        repaint_context.request_repaint();
                     }
                 }
                 thread::sleep(Duration::from_millis(15));
