@@ -44,8 +44,9 @@ const APP_TITLE: &str = "A Simple Autoclicker";
 const BLUE: Color32 = Color32::from_rgb(28, 126, 224);
 const TEXT: Color32 = Color32::from_rgb(48, 48, 48);
 const MUTED: Color32 = Color32::from_rgb(145, 145, 145);
-const DEFAULT_WINDOW_SIZE: [f32; 2] = [900.0, 530.0];
-const TWO_COLUMN_MIN_WIDTH: f32 = 780.0;
+const DEFAULT_WINDOW_SIZE: [f32; 2] = [760.0, 580.0];
+const CONTENT_MAX_WIDTH: f32 = 720.0;
+const WINDOW_SIDE_MARGIN: f32 = 18.0;
 
 pub fn run() -> Result<(), String> {
     let Some(_single_instance) = acquire_single_instance()? else {
@@ -60,7 +61,7 @@ pub fn run() -> Result<(), String> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(DEFAULT_WINDOW_SIZE)
-            .with_min_inner_size([600.0, 440.0])
+            .with_min_inner_size([560.0, 440.0])
             .with_icon(viewport_icon),
         follow_system_theme: false,
         default_theme: eframe::Theme::Light,
@@ -482,7 +483,7 @@ impl WindowsApp {
                 |ui| {
                     if ui
                         .add_sized(
-                            [132.0, 28.0],
+                            [132.0, 26.0],
                             egui::Button::new(if self.recording {
                                 "Press a key…"
                             } else {
@@ -517,7 +518,7 @@ impl WindowsApp {
                     if ui
                         .add_enabled(
                             self.capture_at.is_none(),
-                            egui::Button::new(capture_label).min_size(Vec2::new(132.0, 28.0)),
+                            egui::Button::new(capture_label).min_size(Vec2::new(132.0, 26.0)),
                         )
                         .clicked()
                     {
@@ -632,14 +633,14 @@ impl WindowsApp {
                             .unwrap_or_else(|| "Choose a preset".into());
                         egui::ComboBox::from_id_source("saved-preset")
                             .selected_text(selected)
-                            .width(135.0)
+                            .width(180.0)
                             .show_ui(ui, |ui| {
                                 for (index, name) in self.presets.names().iter().enumerate() {
                                     ui.selectable_value(&mut self.preset_index, Some(index), *name);
                                 }
                             });
                         if ui
-                            .add_sized([56.0, 28.0], egui::Button::new("Load"))
+                            .add_sized([54.0, 26.0], egui::Button::new("Load"))
                             .clicked()
                         {
                             self.load_preset();
@@ -655,12 +656,12 @@ impl WindowsApp {
                 |ui| {
                     ui.horizontal(|ui| {
                         ui.add_sized(
-                            [128.0, 28.0],
+                            [180.0, 26.0],
                             egui::TextEdit::singleline(&mut self.preset_name)
                                 .hint_text("Preset name"),
                         );
                         if ui
-                            .add_sized([90.0, 28.0], egui::Button::new("Save current"))
+                            .add_sized([88.0, 26.0], egui::Button::new("Save current"))
                             .clicked()
                         {
                             self.save_preset();
@@ -677,7 +678,7 @@ impl WindowsApp {
             let active = self.engine.is_active();
             ui.label(
                 RichText::new(if active { "Clicking" } else { "Ready" })
-                    .size(14.0)
+                    .size(13.5)
                     .color(TEXT),
             );
             ui.add_space(3.0);
@@ -693,7 +694,7 @@ impl WindowsApp {
                     Hotkey::LABELS[self.hotkey_index]
                 )
             };
-            ui.label(RichText::new(subtitle).size(11.5).color(MUTED));
+            ui.label(RichText::new(subtitle).size(11.0).color(MUTED));
         });
         ui.add_space(2.0);
         let active = self.engine.is_active();
@@ -703,7 +704,7 @@ impl WindowsApp {
             } else {
                 "Start clicking"
             })
-            .size(14.0)
+            .size(13.5)
             .strong()
             .color(Color32::WHITE),
         )
@@ -712,8 +713,8 @@ impl WindowsApp {
         } else {
             BLUE
         })
-        .rounding(17.0);
-        if ui.add_sized([ui.available_width(), 36.0], button).clicked() {
+        .rounding(15.0);
+        if ui.add_sized([ui.available_width(), 32.0], button).clicked() {
             self.toggle_clicking();
         }
     }
@@ -770,33 +771,26 @@ impl eframe::App for WindowsApp {
         self.process_engine_state();
 
         egui::CentralPanel::default()
-            .frame(Frame::none().fill(Color32::from_rgb(248, 248, 248)))
+            .frame(
+                Frame::none()
+                    .fill(Color32::from_rgb(248, 248, 248))
+                    .inner_margin(Margin::symmetric(WINDOW_SIDE_MARGIN, 6.0)),
+            )
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.vertical_centered(|ui| {
-                            ui.set_max_width(1040.0);
-                            ui.add_space(6.0);
-                            ui.label(RichText::new(APP_TITLE).size(17.0).strong().color(TEXT));
-                            ui.add_space(12.0);
-
-                            if ui.available_width() >= TWO_COLUMN_MIN_WIDTH {
-                                ui.columns(2, |columns| {
-                                    self.click_settings_ui(&mut columns[0]);
-                                    self.presets_ui(&mut columns[1]);
-                                    columns[1].add_space(14.0);
-                                    self.status_ui(&mut columns[1]);
-                                });
-                            } else {
-                                ui.set_max_width(700.0);
-                                self.click_settings_ui(ui);
-                                ui.add_space(14.0);
-                                self.presets_ui(ui);
-                                ui.add_space(14.0);
-                                self.status_ui(ui);
-                            }
+                            ui.set_max_width(CONTENT_MAX_WIDTH);
+                            ui.add_space(3.0);
+                            ui.label(RichText::new(APP_TITLE).size(16.0).strong().color(TEXT));
+                            ui.add_space(7.0);
+                            self.click_settings_ui(ui);
                             ui.add_space(8.0);
+                            self.presets_ui(ui);
+                            ui.add_space(8.0);
+                            self.status_ui(ui);
+                            ui.add_space(3.0);
                         });
                     });
             });
@@ -827,14 +821,14 @@ fn configure_style(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();
     style.text_styles.insert(
         egui::TextStyle::Body,
-        FontId::new(13.0, FontFamily::Proportional),
+        FontId::new(12.5, FontFamily::Proportional),
     );
     style.text_styles.insert(
         egui::TextStyle::Button,
-        FontId::new(13.0, FontFamily::Proportional),
+        FontId::new(12.5, FontFamily::Proportional),
     );
-    style.spacing.item_spacing = Vec2::new(6.0, 2.0);
-    style.spacing.button_padding = Vec2::new(9.0, 4.0);
+    style.spacing.item_spacing = Vec2::new(6.0, 1.0);
+    style.spacing.button_padding = Vec2::new(9.0, 3.0);
     style.visuals = egui::Visuals::light();
     style.visuals.panel_fill = Color32::from_rgb(248, 248, 248);
     style.visuals.widgets.inactive.bg_fill = Color32::from_rgb(235, 235, 235);
@@ -970,9 +964,9 @@ fn group_heading(ui: &mut egui::Ui, title: &str) {
     // stays content-height, which keeps the settings card directly below its
     // heading on short or display-scaled Windows screens.
     ui.horizontal(|ui| {
-        ui.label(RichText::new(title).size(17.0).strong().color(TEXT));
+        ui.label(RichText::new(title).size(16.0).strong().color(TEXT));
     });
-    ui.add_space(4.0);
+    ui.add_space(3.0);
 }
 
 fn card(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
@@ -980,7 +974,7 @@ fn card(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
         .fill(Color32::WHITE)
         .stroke(Stroke::new(1.0_f32, Color32::from_rgb(222, 222, 222)))
         .rounding(10.0)
-        .inner_margin(Margin::symmetric(11.0, 3.0))
+        .inner_margin(Margin::symmetric(11.0, 2.0))
         .shadow(egui::epaint::Shadow {
             offset: Vec2::new(0.0, 1.0),
             blur: 4.0,
@@ -998,15 +992,15 @@ fn settings_row(
 ) {
     let subtitle = subtitle.into();
     ui.horizontal(|ui| {
-        ui.set_min_height(38.0);
-        let left_width = (ui.available_width() * 0.42).clamp(160.0, 300.0);
+        ui.set_min_height(30.0);
+        let left_width = (ui.available_width() * 0.55).clamp(300.0, 420.0);
         ui.allocate_ui_with_layout(
-            Vec2::new(left_width, 37.0),
+            Vec2::new(left_width, 29.0),
             Layout::top_down(Align::Min),
             |ui| {
                 ui.add_space(1.0);
-                ui.label(RichText::new(title).size(14.0).color(TEXT));
-                ui.label(RichText::new(subtitle).size(11.5).color(MUTED));
+                ui.label(RichText::new(title).size(13.0).color(TEXT));
+                ui.label(RichText::new(subtitle).size(10.5).color(MUTED));
             },
         );
         ui.with_layout(Layout::right_to_left(Align::Center), controls);
@@ -1019,7 +1013,7 @@ fn row_separator(ui: &mut egui::Ui) {
 
 fn segment_button(ui: &mut egui::Ui, text: &str, selected: bool) -> egui::Response {
     ui.add_sized(
-        [60.0, 28.0],
+        [58.0, 26.0],
         egui::Button::new(RichText::new(text).strong().color(TEXT))
             .fill(if selected {
                 Color32::from_rgb(198, 198, 198)
@@ -1031,7 +1025,7 @@ fn segment_button(ui: &mut egui::Ui, text: &str, selected: bool) -> egui::Respon
 }
 
 fn toggle(ui: &mut egui::Ui, enabled: &mut bool) -> egui::Response {
-    let desired_size = Vec2::new(38.0, 20.0);
+    let desired_size = Vec2::new(36.0, 18.0);
     let (rect, mut response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
     if response.clicked() {
         *enabled = !*enabled;
@@ -1333,7 +1327,7 @@ impl Drop for WindowsHotkeyThread {
 mod tests {
     use super::{
         configure_style, duration_ms, format_duration, group_heading, settings_row, split_duration,
-        DEFAULT_WINDOW_SIZE, TWO_COLUMN_MIN_WIDTH,
+        CONTENT_MAX_WIDTH, DEFAULT_WINDOW_SIZE, WINDOW_SIDE_MARGIN,
     };
 
     #[test]
@@ -1349,9 +1343,12 @@ mod tests {
     }
 
     #[test]
-    fn default_window_uses_the_compact_laptop_layout() {
-        assert!(DEFAULT_WINDOW_SIZE[1] <= 530.0);
-        assert!(DEFAULT_WINDOW_SIZE[0] - TWO_COLUMN_MIN_WIDTH >= 100.0);
+    fn default_window_fits_one_padded_column() {
+        assert!(DEFAULT_WINDOW_SIZE[1] <= 580.0);
+        assert!(
+            DEFAULT_WINDOW_SIZE[0] >= CONTENT_MAX_WIDTH + WINDOW_SIDE_MARGIN * 2.0,
+            "default width does not leave the required side padding"
+        );
     }
 
     #[test]
@@ -1377,7 +1374,7 @@ mod tests {
             });
         });
 
-        assert!(used_height < 50.0, "compact row used {used_height}px");
+        assert!(used_height < 40.0, "compact row used {used_height}px");
     }
 
     #[test]
