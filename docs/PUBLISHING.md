@@ -30,14 +30,14 @@ and commit the changes. Then create and push a matching version tag:
 
 ```bash
 git add .
-git commit -m "Release version 0.1.13"
+git commit -m "Release version 0.1.14"
 git pull --rebase origin main
 git push origin main
-git tag v0.1.13
-git push origin v0.1.13
+git tag v0.1.14
+git push origin v0.1.14
 ```
 
-Replace `0.1.13` with the version being released. Pushing a tag beginning with
+Replace `0.1.14` with the version being released. Pushing a tag beginning with
 `v` starts the release workflow. The tag must match the version in `Cargo.toml`.
 When both platform builds succeed, the workflow creates the GitHub release,
 generates release notes, and attaches the two Windows downloads and Linux `.deb`

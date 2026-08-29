@@ -44,9 +44,10 @@ const APP_TITLE: &str = "A Simple Autoclicker";
 const BLUE: Color32 = Color32::from_rgb(28, 126, 224);
 const TEXT: Color32 = Color32::from_rgb(48, 48, 48);
 const MUTED: Color32 = Color32::from_rgb(145, 145, 145);
-const DEFAULT_WINDOW_SIZE: [f32; 2] = [600.0, 550.0];
-const CONTENT_MAX_WIDTH: f32 = 560.0;
+const DEFAULT_WINDOW_SIZE: [f32; 2] = [390.0, 580.0];
+const CONTENT_MAX_WIDTH: f32 = 350.0;
 const WINDOW_SIDE_MARGIN: f32 = 18.0;
+const START_BUTTON_HEIGHT: f32 = 30.0;
 
 pub fn run() -> Result<(), String> {
     let Some(_single_instance) = acquire_single_instance()? else {
@@ -61,7 +62,7 @@ pub fn run() -> Result<(), String> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(DEFAULT_WINDOW_SIZE)
-            .with_min_inner_size([500.0, 420.0])
+            .with_min_inner_size([360.0, 480.0])
             .with_icon(viewport_icon),
         follow_system_theme: false,
         default_theme: eframe::Theme::Light,
@@ -661,20 +662,20 @@ impl WindowsApp {
                             .unwrap_or_else(|| "Choose a preset".into());
                         egui::ComboBox::from_id_source("saved-preset")
                             .selected_text(selected)
-                            .width(110.0)
+                            .width(70.0)
                             .show_ui(ui, |ui| {
                                 for (index, name) in self.presets.names().iter().enumerate() {
                                     ui.selectable_value(&mut self.preset_index, Some(index), *name);
                                 }
                             });
                         if ui
-                            .add_sized([46.0, 24.0], egui::Button::new("Load"))
+                            .add_sized([44.0, 24.0], egui::Button::new("Load"))
                             .clicked()
                         {
                             self.load_preset();
                         }
                         if ui
-                            .add_sized([50.0, 24.0], egui::Button::new("Delete"))
+                            .add_sized([52.0, 24.0], egui::Button::new("Delete"))
                             .clicked()
                         {
                             self.delete_preset();
@@ -690,12 +691,12 @@ impl WindowsApp {
                 |ui| {
                     ui.horizontal(|ui| {
                         ui.add_sized(
-                            [125.0, 24.0],
+                            [75.0, 24.0],
                             egui::TextEdit::singleline(&mut self.preset_name)
                                 .hint_text("Preset name"),
                         );
                         if ui
-                            .add_sized([80.0, 24.0], egui::Button::new("Save current"))
+                            .add_sized([88.0, 24.0], egui::Button::new("Save current"))
                             .clicked()
                         {
                             self.save_preset();
@@ -748,7 +749,10 @@ impl WindowsApp {
             BLUE
         })
         .rounding(14.0);
-        if ui.add_sized([ui.available_width(), 30.0], button).clicked() {
+        if ui
+            .add_sized([ui.available_width(), START_BUTTON_HEIGHT], button)
+            .clicked()
+        {
             self.toggle_clicking();
         }
     }
@@ -1027,7 +1031,7 @@ fn settings_row(
     let subtitle = subtitle.into();
     ui.horizontal(|ui| {
         ui.set_min_height(28.0);
-        let left_width = (ui.available_width() * 0.55).clamp(300.0, 420.0);
+        let left_width = (ui.available_width() * 0.42).clamp(135.0, 185.0);
         ui.allocate_ui_with_layout(
             Vec2::new(left_width, 27.0),
             Layout::top_down(Align::Min),
@@ -1361,7 +1365,7 @@ impl Drop for WindowsHotkeyThread {
 mod tests {
     use super::{
         configure_style, duration_ms, format_duration, group_heading, settings_row, split_duration,
-        CONTENT_MAX_WIDTH, DEFAULT_WINDOW_SIZE, WINDOW_SIDE_MARGIN,
+        CONTENT_MAX_WIDTH, DEFAULT_WINDOW_SIZE, START_BUTTON_HEIGHT, WINDOW_SIDE_MARGIN,
     };
 
     #[test]
@@ -1378,7 +1382,9 @@ mod tests {
 
     #[test]
     fn default_window_fits_one_padded_column() {
-        assert!(DEFAULT_WINDOW_SIZE[1] <= 550.0);
+        let ratio = DEFAULT_WINDOW_SIZE[0] / DEFAULT_WINDOW_SIZE[1];
+        assert!((ratio - 2.0 / 3.0).abs() < 0.02);
+        assert_eq!(DEFAULT_WINDOW_SIZE[1], 550.0 + START_BUTTON_HEIGHT);
         assert!(
             DEFAULT_WINDOW_SIZE[0] >= CONTENT_MAX_WIDTH + WINDOW_SIDE_MARGIN * 2.0,
             "default width does not leave the required side padding"
