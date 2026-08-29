@@ -44,8 +44,8 @@ const APP_TITLE: &str = "A Simple Autoclicker";
 const BLUE: Color32 = Color32::from_rgb(28, 126, 224);
 const TEXT: Color32 = Color32::from_rgb(48, 48, 48);
 const MUTED: Color32 = Color32::from_rgb(145, 145, 145);
-const DEFAULT_WINDOW_SIZE: [f32; 2] = [760.0, 580.0];
-const CONTENT_MAX_WIDTH: f32 = 720.0;
+const DEFAULT_WINDOW_SIZE: [f32; 2] = [600.0, 550.0];
+const CONTENT_MAX_WIDTH: f32 = 560.0;
 const WINDOW_SIDE_MARGIN: f32 = 18.0;
 
 pub fn run() -> Result<(), String> {
@@ -61,7 +61,7 @@ pub fn run() -> Result<(), String> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(DEFAULT_WINDOW_SIZE)
-            .with_min_inner_size([560.0, 440.0])
+            .with_min_inner_size([500.0, 420.0])
             .with_icon(viewport_icon),
         follow_system_theme: false,
         default_theme: eframe::Theme::Light,
@@ -448,6 +448,34 @@ impl WindowsApp {
         self.status_message = Some(format!("Loaded preset “{}”.", preset.name));
     }
 
+    fn delete_preset(&mut self) {
+        let Some(index) = self.preset_index else {
+            self.status_message = Some("Choose a saved preset first.".into());
+            return;
+        };
+        match self.presets.delete(index) {
+            Ok(Some(preset)) => {
+                if self.preset_name == preset.name {
+                    self.preset_name.clear();
+                }
+                let remaining = self.presets.names().len();
+                self.preset_index = if remaining == 0 {
+                    None
+                } else {
+                    Some(index.min(remaining - 1))
+                };
+                self.status_message = Some(format!("Deleted preset “{}”.", preset.name));
+            }
+            Ok(None) => {
+                self.preset_index = None;
+                self.status_message = Some("That preset no longer exists.".into());
+            }
+            Err(error) => {
+                self.status_message = Some(format!("Could not delete preset: {error}"));
+            }
+        }
+    }
+
     fn show_window(&mut self, ctx: &egui::Context) {
         if matches!(
             self.status_message.as_deref(),
@@ -483,7 +511,7 @@ impl WindowsApp {
                 |ui| {
                     if ui
                         .add_sized(
-                            [132.0, 26.0],
+                            [118.0, 24.0],
                             egui::Button::new(if self.recording {
                                 "Press a key…"
                             } else {
@@ -518,7 +546,7 @@ impl WindowsApp {
                     if ui
                         .add_enabled(
                             self.capture_at.is_none(),
-                            egui::Button::new(capture_label).min_size(Vec2::new(132.0, 26.0)),
+                            egui::Button::new(capture_label).min_size(Vec2::new(118.0, 24.0)),
                         )
                         .clicked()
                     {
@@ -633,17 +661,23 @@ impl WindowsApp {
                             .unwrap_or_else(|| "Choose a preset".into());
                         egui::ComboBox::from_id_source("saved-preset")
                             .selected_text(selected)
-                            .width(180.0)
+                            .width(110.0)
                             .show_ui(ui, |ui| {
                                 for (index, name) in self.presets.names().iter().enumerate() {
                                     ui.selectable_value(&mut self.preset_index, Some(index), *name);
                                 }
                             });
                         if ui
-                            .add_sized([54.0, 26.0], egui::Button::new("Load"))
+                            .add_sized([46.0, 24.0], egui::Button::new("Load"))
                             .clicked()
                         {
                             self.load_preset();
+                        }
+                        if ui
+                            .add_sized([50.0, 24.0], egui::Button::new("Delete"))
+                            .clicked()
+                        {
+                            self.delete_preset();
                         }
                     });
                 },
@@ -656,12 +690,12 @@ impl WindowsApp {
                 |ui| {
                     ui.horizontal(|ui| {
                         ui.add_sized(
-                            [180.0, 26.0],
+                            [125.0, 24.0],
                             egui::TextEdit::singleline(&mut self.preset_name)
                                 .hint_text("Preset name"),
                         );
                         if ui
-                            .add_sized([88.0, 26.0], egui::Button::new("Save current"))
+                            .add_sized([80.0, 24.0], egui::Button::new("Save current"))
                             .clicked()
                         {
                             self.save_preset();
@@ -678,7 +712,7 @@ impl WindowsApp {
             let active = self.engine.is_active();
             ui.label(
                 RichText::new(if active { "Clicking" } else { "Ready" })
-                    .size(13.5)
+                    .size(13.0)
                     .color(TEXT),
             );
             ui.add_space(3.0);
@@ -694,7 +728,7 @@ impl WindowsApp {
                     Hotkey::LABELS[self.hotkey_index]
                 )
             };
-            ui.label(RichText::new(subtitle).size(11.0).color(MUTED));
+            ui.label(RichText::new(subtitle).size(10.5).color(MUTED));
         });
         ui.add_space(2.0);
         let active = self.engine.is_active();
@@ -704,7 +738,7 @@ impl WindowsApp {
             } else {
                 "Start clicking"
             })
-            .size(13.5)
+            .size(13.0)
             .strong()
             .color(Color32::WHITE),
         )
@@ -713,8 +747,8 @@ impl WindowsApp {
         } else {
             BLUE
         })
-        .rounding(15.0);
-        if ui.add_sized([ui.available_width(), 32.0], button).clicked() {
+        .rounding(14.0);
+        if ui.add_sized([ui.available_width(), 30.0], button).clicked() {
             self.toggle_clicking();
         }
     }
@@ -783,12 +817,12 @@ impl eframe::App for WindowsApp {
                         ui.vertical_centered(|ui| {
                             ui.set_max_width(CONTENT_MAX_WIDTH);
                             ui.add_space(3.0);
-                            ui.label(RichText::new(APP_TITLE).size(16.0).strong().color(TEXT));
-                            ui.add_space(7.0);
+                            ui.label(RichText::new(APP_TITLE).size(15.5).strong().color(TEXT));
+                            ui.add_space(5.0);
                             self.click_settings_ui(ui);
-                            ui.add_space(8.0);
+                            ui.add_space(6.0);
                             self.presets_ui(ui);
-                            ui.add_space(8.0);
+                            ui.add_space(6.0);
                             self.status_ui(ui);
                             ui.add_space(3.0);
                         });
@@ -821,11 +855,11 @@ fn configure_style(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();
     style.text_styles.insert(
         egui::TextStyle::Body,
-        FontId::new(12.5, FontFamily::Proportional),
+        FontId::new(12.0, FontFamily::Proportional),
     );
     style.text_styles.insert(
         egui::TextStyle::Button,
-        FontId::new(12.5, FontFamily::Proportional),
+        FontId::new(12.0, FontFamily::Proportional),
     );
     style.spacing.item_spacing = Vec2::new(6.0, 1.0);
     style.spacing.button_padding = Vec2::new(9.0, 3.0);
@@ -964,9 +998,9 @@ fn group_heading(ui: &mut egui::Ui, title: &str) {
     // stays content-height, which keeps the settings card directly below its
     // heading on short or display-scaled Windows screens.
     ui.horizontal(|ui| {
-        ui.label(RichText::new(title).size(16.0).strong().color(TEXT));
+        ui.label(RichText::new(title).size(15.5).strong().color(TEXT));
     });
-    ui.add_space(3.0);
+    ui.add_space(2.0);
 }
 
 fn card(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
@@ -992,15 +1026,15 @@ fn settings_row(
 ) {
     let subtitle = subtitle.into();
     ui.horizontal(|ui| {
-        ui.set_min_height(30.0);
+        ui.set_min_height(28.0);
         let left_width = (ui.available_width() * 0.55).clamp(300.0, 420.0);
         ui.allocate_ui_with_layout(
-            Vec2::new(left_width, 29.0),
+            Vec2::new(left_width, 27.0),
             Layout::top_down(Align::Min),
             |ui| {
                 ui.add_space(1.0);
-                ui.label(RichText::new(title).size(13.0).color(TEXT));
-                ui.label(RichText::new(subtitle).size(10.5).color(MUTED));
+                ui.label(RichText::new(title).size(12.5).color(TEXT));
+                ui.label(RichText::new(subtitle).size(10.0).color(MUTED));
             },
         );
         ui.with_layout(Layout::right_to_left(Align::Center), controls);
@@ -1013,7 +1047,7 @@ fn row_separator(ui: &mut egui::Ui) {
 
 fn segment_button(ui: &mut egui::Ui, text: &str, selected: bool) -> egui::Response {
     ui.add_sized(
-        [58.0, 26.0],
+        [54.0, 24.0],
         egui::Button::new(RichText::new(text).strong().color(TEXT))
             .fill(if selected {
                 Color32::from_rgb(198, 198, 198)
@@ -1025,7 +1059,7 @@ fn segment_button(ui: &mut egui::Ui, text: &str, selected: bool) -> egui::Respon
 }
 
 fn toggle(ui: &mut egui::Ui, enabled: &mut bool) -> egui::Response {
-    let desired_size = Vec2::new(36.0, 18.0);
+    let desired_size = Vec2::new(34.0, 17.0);
     let (rect, mut response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
     if response.clicked() {
         *enabled = !*enabled;
@@ -1344,7 +1378,7 @@ mod tests {
 
     #[test]
     fn default_window_fits_one_padded_column() {
-        assert!(DEFAULT_WINDOW_SIZE[1] <= 580.0);
+        assert!(DEFAULT_WINDOW_SIZE[1] <= 550.0);
         assert!(
             DEFAULT_WINDOW_SIZE[0] >= CONTENT_MAX_WIDTH + WINDOW_SIDE_MARGIN * 2.0,
             "default width does not leave the required side padding"

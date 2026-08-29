@@ -187,10 +187,13 @@ pub fn build_ui(application: &adw::Application) {
         .hexpand(true)
         .build();
     let load_preset_button = gtk::Button::with_label("Load");
+    let delete_preset_button = gtk::Button::with_label("Delete");
+    delete_preset_button.add_css_class("destructive-action");
     let save_preset_button = gtk::Button::with_label("Save current");
     let preset_controls = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     preset_controls.append(&preset_dropdown);
     preset_controls.append(&load_preset_button);
+    preset_controls.append(&delete_preset_button);
     let preset_save_controls = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     preset_save_controls.append(&preset_name);
     preset_save_controls.append(&save_preset_button);
@@ -259,6 +262,39 @@ pub fn build_ui(application: &adw::Application) {
             clicked_start_button.set_visible(false);
             clicked_stop_button.set_visible(true);
             engine.set_active(true);
+        });
+    }
+    {
+        let preset_store = Rc::clone(&preset_store);
+        let preset_model = preset_model.clone();
+        let preset_dropdown = preset_dropdown.clone();
+        let preset_name = preset_name.clone();
+        let preset_load_row = preset_load_row.clone();
+        delete_preset_button.connect_clicked(move |_| {
+            let index = preset_dropdown.selected() as usize;
+            let result = preset_store.borrow_mut().delete(index);
+            match result {
+                Ok(Some(preset)) => {
+                    if preset_name.text().as_str() == preset.name {
+                        preset_name.set_text("");
+                    }
+                    let store = preset_store.borrow();
+                    refresh_preset_model(&preset_model, &store);
+                    let remaining = store.names().len();
+                    if remaining == 0 {
+                        preset_dropdown.set_selected(gtk::INVALID_LIST_POSITION);
+                    } else {
+                        preset_dropdown.set_selected(index.min(remaining - 1) as u32);
+                    }
+                    preset_load_row.set_subtitle(&format!("Deleted preset: {}", preset.name));
+                }
+                Ok(None) => {
+                    preset_load_row.set_subtitle("Choose a saved preset first");
+                }
+                Err(error) => {
+                    preset_load_row.set_subtitle(&format!("Could not delete: {error}"));
+                }
+            }
         });
     }
     {

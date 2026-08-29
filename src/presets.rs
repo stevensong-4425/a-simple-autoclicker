@@ -18,7 +18,7 @@ pub struct Preset {
 
 #[cfg(test)]
 mod tests {
-    use super::Preset;
+    use super::{Preset, PresetStore};
     use crate::model::{Action, ClickPosition, Hotkey};
 
     #[test]
@@ -36,6 +36,12 @@ mod tests {
         let encoded = serde_json::to_string(&preset).expect("serialize preset");
         let decoded: Preset = serde_json::from_str(&encoded).expect("deserialize preset");
         assert_eq!(decoded, preset);
+    }
+
+    #[test]
+    fn deleting_without_a_selection_is_a_no_op() {
+        let mut store = PresetStore::default();
+        assert_eq!(store.delete(0), Ok(None));
     }
 }
 
@@ -78,6 +84,23 @@ impl PresetStore {
                 .sort_by_key(|preset| preset.name.to_lowercase());
         }
 
+        self.persist()
+    }
+
+    pub fn delete(&mut self, index: usize) -> Result<Option<Preset>, String> {
+        if index >= self.presets.len() {
+            return Ok(None);
+        }
+
+        let removed = self.presets.remove(index);
+        if let Err(error) = self.persist() {
+            self.presets.insert(index, removed);
+            return Err(error);
+        }
+        Ok(Some(removed))
+    }
+
+    fn persist(&self) -> Result<(), String> {
         let path = Self::path();
         let parent = path
             .parent()
