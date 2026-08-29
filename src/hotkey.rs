@@ -2,7 +2,7 @@ use std::{
     ffi::{c_char, c_int, c_long, c_uint, c_ulong, c_void},
     sync::{mpsc, Arc},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use libloading::Library;
@@ -12,6 +12,7 @@ use crate::{clicker::ClickEngine, model::Hotkey};
 type Display = c_void;
 type Window = c_ulong;
 type OpenDisplay = unsafe extern "C" fn(*const c_char) -> *mut Display;
+type CloseDisplay = unsafe extern "C" fn(*mut Display) -> c_int;
 type DefaultRootWindow = unsafe extern "C" fn(*mut Display) -> Window;
 type KeysymToKeycode = unsafe extern "C" fn(*mut Display, c_ulong) -> c_uint;
 type GrabKey =
@@ -68,6 +69,8 @@ fn run_hotkey_loop(
     unsafe {
         let x11 = Library::new("libX11.so.6").map_err(|error| error.to_string())?;
         let open_display: OpenDisplay = *x11.get(b"XOpenDisplay\0").map_err(|e| e.to_string())?;
+        let close_display: CloseDisplay =
+            *x11.get(b"XCloseDisplay\0").map_err(|e| e.to_string())?;
         let default_root: DefaultRootWindow = *x11
             .get(b"XDefaultRootWindow\0")
             .map_err(|e| e.to_string())?;
@@ -85,7 +88,11 @@ fn run_hotkey_loop(
         }
         let root = default_root(display);
         let mut keycode = keysym_to_keycode(display, initial.keysym()) as c_int;
+        let mut current_hotkey = initial;
         let mut enabled = true;
+        let mut last_toggle = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
         grab_key(
             display,
             keycode,
@@ -98,12 +105,25 @@ fn run_hotkey_loop(
         flush(display);
 
         loop {
-            while let Ok(command) = receiver.try_recv() {
+            loop {
+                let command = match receiver.try_recv() {
+                    Ok(command) => command,
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        if enabled {
+                            ungrab_key(display, keycode, ANY_MODIFIER, root);
+                        }
+                        flush(display);
+                        close_display(display);
+                        return Ok(());
+                    }
+                };
                 match command {
                     Command::SetHotkey(hotkey) => {
                         if enabled {
                             ungrab_key(display, keycode, ANY_MODIFIER, root);
                         }
+                        current_hotkey = hotkey;
                         keycode = keysym_to_keycode(display, hotkey.keysym()) as c_int;
                         if enabled {
                             grab_key(
@@ -141,8 +161,17 @@ fn run_hotkey_loop(
             while pending(display) > 0 {
                 let mut event = XEvent { pad: [0; 24] };
                 next_event(display, &mut event);
-                if event.event_type == KEY_PRESS {
+                let repeated_action_conflicts = matches!(
+                    engine.action(),
+                    crate::model::Action::Key { keysym, .. }
+                        if keysym == current_hotkey.keysym()
+                );
+                if event.event_type == KEY_PRESS
+                    && !repeated_action_conflicts
+                    && last_toggle.elapsed() >= Duration::from_millis(200)
+                {
                     engine.toggle();
+                    last_toggle = Instant::now();
                 }
             }
             thread::sleep(Duration::from_millis(15));

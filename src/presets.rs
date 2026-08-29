@@ -72,6 +72,7 @@ impl PresetStore {
     }
 
     pub fn save(&mut self, preset: Preset) -> Result<(), String> {
+        let previous = self.presets.clone();
         if let Some(existing) = self
             .presets
             .iter_mut()
@@ -84,7 +85,11 @@ impl PresetStore {
                 .sort_by_key(|preset| preset.name.to_lowercase());
         }
 
-        self.persist()
+        if let Err(error) = self.persist() {
+            self.presets = previous;
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub fn delete(&mut self, index: usize) -> Result<Option<Preset>, String> {

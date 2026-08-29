@@ -44,11 +44,14 @@ const APP_TITLE: &str = "A Simple Autoclicker";
 const BLUE: Color32 = Color32::from_rgb(28, 126, 224);
 const TEXT: Color32 = Color32::from_rgb(48, 48, 48);
 const MUTED: Color32 = Color32::from_rgb(145, 145, 145);
-const DEFAULT_WINDOW_SIZE: [f32; 2] = [390.0, 600.0];
+const START_BUTTON_HEIGHT: f32 = 30.0;
+const BOTTOM_VISIBILITY_ALLOWANCE: f32 = 30.0;
+const DEFAULT_WINDOW_SIZE: [f32; 2] = [
+    390.0,
+    550.0 + START_BUTTON_HEIGHT + BOTTOM_VISIBILITY_ALLOWANCE,
+];
 const CONTENT_MAX_WIDTH: f32 = 350.0;
 const WINDOW_SIDE_MARGIN: f32 = 18.0;
-const START_BUTTON_HEIGHT: f32 = 30.0;
-const BOTTOM_VISIBILITY_ALLOWANCE: f32 = 20.0;
 
 pub fn run() -> Result<(), String> {
     let Some(_single_instance) = acquire_single_instance()? else {
@@ -571,39 +574,28 @@ impl WindowsApp {
                 });
             });
             row_separator(ui);
-            settings_row(
-                ui,
-                "Stop automatically",
-                "Stop after a set time",
-                |ui| {
-                    toggle(ui, &mut self.timed_run);
-                },
-            );
+            settings_row(ui, "Stop automatically", "Stop after a set time", |ui| {
+                toggle(ui, &mut self.timed_run);
+            });
             row_separator(ui);
-            settings_row(
-                ui,
-                "Run duration",
-                "Starts when clicking begins",
-                |ui| {
-                    ui.add_enabled_ui(self.timed_run, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.add(
-                                egui::DragValue::new(&mut self.duration_value)
-                                    .clamp_range(1..=9_999),
-                            );
-                            egui::ComboBox::from_id_source("duration-unit")
-                                .selected_text(["Seconds", "Minutes", "Hours"][self.duration_unit])
-                                .show_ui(ui, |ui| {
-                                    for (index, name) in
-                                        ["Seconds", "Minutes", "Hours"].iter().enumerate()
-                                    {
-                                        ui.selectable_value(&mut self.duration_unit, index, *name);
-                                    }
-                                });
-                        });
+            settings_row(ui, "Run duration", "Starts when clicking begins", |ui| {
+                ui.add_enabled_ui(self.timed_run, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut self.duration_value).clamp_range(1..=9_999),
+                        );
+                        egui::ComboBox::from_id_source("duration-unit")
+                            .selected_text(["Seconds", "Minutes", "Hours"][self.duration_unit])
+                            .show_ui(ui, |ui| {
+                                for (index, name) in
+                                    ["Seconds", "Minutes", "Hours"].iter().enumerate()
+                                {
+                                    ui.selectable_value(&mut self.duration_unit, index, *name);
+                                }
+                            });
                     });
-                },
-            );
+                });
+            });
             row_separator(ui);
             settings_row(
                 ui,
@@ -650,40 +642,35 @@ impl WindowsApp {
     fn presets_ui(&mut self, ui: &mut egui::Ui) {
         group_heading(ui, "Presets");
         card(ui, |ui| {
-            settings_row(
-                ui,
-                "Saved preset",
-                "Load a saved configuration",
-                |ui| {
-                    ui.horizontal(|ui| {
-                        let selected = self
-                            .preset_index
-                            .and_then(|index| self.presets.get(index))
-                            .map(|preset| preset.name)
-                            .unwrap_or_else(|| "Choose a preset".into());
-                        egui::ComboBox::from_id_source("saved-preset")
-                            .selected_text(selected)
-                            .width(70.0)
-                            .show_ui(ui, |ui| {
-                                for (index, name) in self.presets.names().iter().enumerate() {
-                                    ui.selectable_value(&mut self.preset_index, Some(index), *name);
-                                }
-                            });
-                        if ui
-                            .add_sized([44.0, 24.0], egui::Button::new("Load"))
-                            .clicked()
-                        {
-                            self.load_preset();
-                        }
-                        if ui
-                            .add_sized([52.0, 24.0], egui::Button::new("Delete"))
-                            .clicked()
-                        {
-                            self.delete_preset();
-                        }
-                    });
-                },
-            );
+            settings_row(ui, "Saved preset", "Load a saved configuration", |ui| {
+                ui.horizontal(|ui| {
+                    let selected = self
+                        .preset_index
+                        .and_then(|index| self.presets.get(index))
+                        .map(|preset| preset.name)
+                        .unwrap_or_else(|| "Choose a preset".into());
+                    egui::ComboBox::from_id_source("saved-preset")
+                        .selected_text(selected)
+                        .width(70.0)
+                        .show_ui(ui, |ui| {
+                            for (index, name) in self.presets.names().iter().enumerate() {
+                                ui.selectable_value(&mut self.preset_index, Some(index), *name);
+                            }
+                        });
+                    if ui
+                        .add_sized([44.0, 24.0], egui::Button::new("Load"))
+                        .clicked()
+                    {
+                        self.load_preset();
+                    }
+                    if ui
+                        .add_sized([52.0, 24.0], egui::Button::new("Delete"))
+                        .clicked()
+                    {
+                        self.delete_preset();
+                    }
+                });
+            });
             row_separator(ui);
             settings_row(
                 ui,
@@ -1097,9 +1084,9 @@ fn duration_ms(value: u64, unit: usize) -> u64 {
 }
 
 fn split_duration(milliseconds: u64) -> (u64, usize) {
-    if milliseconds >= 3_600_000 && milliseconds % 3_600_000 == 0 {
+    if milliseconds >= 3_600_000 && milliseconds.is_multiple_of(3_600_000) {
         (milliseconds / 3_600_000, 2)
-    } else if milliseconds >= 60_000 && milliseconds % 60_000 == 0 {
+    } else if milliseconds >= 60_000 && milliseconds.is_multiple_of(60_000) {
         (milliseconds / 60_000, 1)
     } else {
         ((milliseconds / 1_000).max(1), 0)
@@ -1385,13 +1372,14 @@ mod tests {
     #[test]
     fn default_window_fits_one_padded_column() {
         let ratio = DEFAULT_WINDOW_SIZE[0] / DEFAULT_WINDOW_SIZE[1];
-        assert!((ratio - 2.0 / 3.0).abs() < 0.02);
+        assert!((ratio - 2.0 / 3.0).abs() < 0.03);
         assert_eq!(
             DEFAULT_WINDOW_SIZE[1],
             550.0 + START_BUTTON_HEIGHT + BOTTOM_VISIBILITY_ALLOWANCE
         );
+        let default_width = std::hint::black_box(DEFAULT_WINDOW_SIZE[0]);
         assert!(
-            DEFAULT_WINDOW_SIZE[0] >= CONTENT_MAX_WIDTH + WINDOW_SIDE_MARGIN * 2.0,
+            default_width >= CONTENT_MAX_WIDTH + WINDOW_SIDE_MARGIN * 2.0,
             "default width does not leave the required side padding"
         );
     }

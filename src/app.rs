@@ -256,7 +256,19 @@ pub fn build_ui(application: &adw::Application) {
         let engine = Arc::clone(&engine);
         let clicked_start_button = start_button.clone();
         let clicked_stop_button = stop_button.clone();
+        let selected_hotkey = Rc::clone(&selected_hotkey);
+        let status_row = status_row.clone();
         start_button.connect_clicked(move |_| {
+            let conflicts_with_hotkey = matches!(
+                engine.action(),
+                Action::Key { keysym, .. } if keysym == selected_hotkey.get().keysym()
+            );
+            if conflicts_with_hotkey {
+                status_row.set_title("Choose a different key");
+                status_row
+                    .set_subtitle("The repeated key and global toggle hotkey must be different");
+                return;
+            }
             // Remove the control beneath the pointer before the worker emits its
             // first synthetic click. Otherwise that click toggles us off again.
             clicked_start_button.set_visible(false);
@@ -534,6 +546,16 @@ pub fn build_ui(application: &adw::Application) {
                 return;
             };
 
+            if matches!(
+                preset.action,
+                Action::Key { keysym, .. } if keysym == preset.hotkey.keysym()
+            ) {
+                preset_load_row.set_subtitle(
+                    "This preset repeats its own toggle hotkey; edit and save it again",
+                );
+                return;
+            }
+
             engine.set_active(false);
             match preset.action {
                 Action::LeftClick => left_action.set_active(true),
@@ -605,10 +627,26 @@ pub fn build_ui(application: &adw::Application) {
         });
     }
     {
+        let engine = Arc::clone(&engine);
         let hotkeys = Rc::clone(&hotkeys);
         let selected_hotkey = Rc::clone(&selected_hotkey);
+        let record_key_row = record_key_row.clone();
         hotkey_dropdown.connect_selected_notify(move |dropdown| {
             if let Some(hotkey) = Hotkey::ALL.get(dropdown.selected() as usize) {
+                if matches!(
+                    engine.action(),
+                    Action::Key { keysym, .. } if keysym == hotkey.keysym()
+                ) {
+                    let previous = Hotkey::ALL
+                        .iter()
+                        .position(|candidate| *candidate == selected_hotkey.get())
+                        .unwrap_or(2);
+                    record_key_row.set_subtitle(
+                        "That key is already the repeated action; choose another toggle key",
+                    );
+                    dropdown.set_selected(previous as u32);
+                    return;
+                }
                 selected_hotkey.set(*hotkey);
                 hotkeys.set_hotkey(*hotkey);
             }
@@ -848,9 +886,9 @@ fn set_duration_widgets(
         return;
     }
     let total_seconds = duration_ms / 1_000;
-    let (display_value, selected_unit) = if total_seconds % 3_600 == 0 {
+    let (display_value, selected_unit) = if total_seconds.is_multiple_of(3_600) {
         (total_seconds / 3_600, 2)
-    } else if total_seconds % 60 == 0 {
+    } else if total_seconds.is_multiple_of(60) {
         (total_seconds / 60, 1)
     } else {
         (total_seconds.max(1), 0)

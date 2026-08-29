@@ -93,7 +93,7 @@ fn tray_icon(size: i32, active: bool) -> ksni::Icon {
     let mut data = Vec::with_capacity(rgba.len());
     // StatusNotifierItem pixmaps use ARGB rather than the RGBA order used by
     // eframe and tray-icon on Windows.
-    for pixel in rgba.chunks_exact(4) {
+    for pixel in rgba.as_chunks::<4>().0 {
         data.extend_from_slice(&[pixel[3], pixel[0], pixel[1], pixel[2]]);
     }
 
@@ -120,17 +120,17 @@ mod tests {
         let icon = tray_icon(22, true);
         assert!(icon
             .data
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .any(|pixel| pixel[0] == 255 && pixel[1] > 200 && pixel[2] < 80));
     }
 
     #[test]
     fn idle_tray_icon_is_grey() {
         let icon = tray_icon(22, false);
-        assert!(icon.data.chunks_exact(4).any(|pixel| {
-            pixel[0] == 255
-                && pixel[1].abs_diff(pixel[2]) < 12
-                && pixel[2].abs_diff(pixel[3]) < 12
+        assert!(icon.data.as_chunks::<4>().0.iter().any(|pixel| {
+            pixel[0] == 255 && pixel[1].abs_diff(pixel[2]) < 12 && pixel[2].abs_diff(pixel[3]) < 12
         }));
     }
 }

@@ -14,6 +14,7 @@ use crate::{
 
 pub struct ClickEngine {
     active: AtomicBool,
+    backend_failed: AtomicBool,
     run_generation: AtomicU64,
     interval_ms: AtomicU64,
     duration_ms: AtomicU64,
@@ -30,6 +31,7 @@ impl ClickEngine {
     pub fn start() -> Arc<Self> {
         let engine = Arc::new(Self {
             active: AtomicBool::new(false),
+            backend_failed: AtomicBool::new(false),
             run_generation: AtomicU64::new(0),
             interval_ms: AtomicU64::new(100),
             duration_ms: AtomicU64::new(0),
@@ -52,6 +54,10 @@ impl ClickEngine {
     }
 
     pub fn set_active(&self, active: bool) {
+        if active && self.backend_failed.load(Ordering::Acquire) {
+            self.active.store(false, Ordering::Release);
+            return;
+        }
         if active {
             self.completed_run.store(false, Ordering::Release);
             self.run_generation.fetch_add(1, Ordering::AcqRel);
@@ -61,6 +67,10 @@ impl ClickEngine {
 
     #[cfg_attr(target_os = "windows", allow(dead_code))]
     pub fn toggle(&self) {
+        if self.backend_failed.load(Ordering::Acquire) {
+            self.active.store(false, Ordering::Release);
+            return;
+        }
         let was_active = self.active.fetch_xor(true, Ordering::AcqRel);
         if !was_active {
             self.completed_run.store(false, Ordering::Release);
@@ -70,7 +80,7 @@ impl ClickEngine {
 
     pub fn set_interval_ms(&self, interval_ms: u64) {
         self.interval_ms
-            .store(interval_ms.max(10), Ordering::Release);
+            .store(interval_ms.clamp(10, 60_000), Ordering::Release);
     }
 
     pub fn set_duration_ms(&self, duration_ms: u64) {
@@ -135,6 +145,8 @@ impl ClickEngine {
             Ok(backend) => backend,
             Err(error) => {
                 *self.backend_error.write().expect("error lock poisoned") = Some(error);
+                self.backend_failed.store(true, Ordering::Release);
+                self.active.store(false, Ordering::Release);
                 return;
             }
         };
@@ -142,7 +154,7 @@ impl ClickEngine {
         let mut was_active = false;
         let mut stop_at = None;
         let mut action_limit = 0;
-        let mut actions_completed = 0;
+        let mut actions_completed = 0u64;
         let mut generation = 0;
 
         loop {
@@ -166,8 +178,15 @@ impl ClickEngine {
                     continue;
                 }
                 let duration_ms = self.duration_ms.load(Ordering::Acquire);
-                stop_at =
-                    (duration_ms > 0).then(|| Instant::now() + Duration::from_millis(duration_ms));
+                stop_at = (duration_ms > 0)
+                    .then(|| Instant::now().checked_add(Duration::from_millis(duration_ms)))
+                    .flatten();
+                if duration_ms > 0 && stop_at.is_none() {
+                    self.remaining_ms.store(0, Ordering::Release);
+                    self.active.store(false, Ordering::Release);
+                    self.completed_run.store(true, Ordering::Release);
+                    continue;
+                }
                 self.remaining_ms.store(duration_ms, Ordering::Release);
                 action_limit = self.max_actions.load(Ordering::Acquire);
                 actions_completed = 0;
@@ -205,7 +224,7 @@ impl ClickEngine {
                     *self.backend_error.write().expect("error lock poisoned") = None;
                 }
                 if action_limit > 0 {
-                    actions_completed += 1;
+                    actions_completed = actions_completed.saturating_add(1);
                     let remaining = action_limit.saturating_sub(actions_completed);
                     self.remaining_actions.store(remaining, Ordering::Release);
                     if remaining == 0 {

@@ -2,8 +2,7 @@
 mod icon;
 
 use std::{
-    env,
-    fs,
+    env, fs,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -64,7 +63,10 @@ fn find_resource_compiler() -> Option<PathBuf> {
     }
 
     let program_files = env::var_os("ProgramFiles(x86)")?;
-    let sdk_bin = Path::new(&program_files).join("Windows Kits").join("10").join("bin");
+    let sdk_bin = Path::new(&program_files)
+        .join("Windows Kits")
+        .join("10")
+        .join("bin");
     let mut versions = fs::read_dir(sdk_bin)
         .ok()?
         .filter_map(Result::ok)

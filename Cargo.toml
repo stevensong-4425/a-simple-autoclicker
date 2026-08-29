@@ -1,8 +1,8 @@
 [package]
 name = "a-simple-autoclicker"
-version = "0.1.15"
+version = "0.1.16"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.88"
 description = "A simple cross-platform desktop autoclicker"
 license = "MIT"
 

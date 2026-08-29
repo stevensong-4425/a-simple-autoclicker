@@ -28,10 +28,8 @@ pub fn mouse_rgba(size: u32, active: bool) -> Vec<u8> {
 
             for sample_y in 0..samples {
                 for sample_x in 0..samples {
-                    let px = (x as f32 + (sample_x as f32 + 0.5) / samples as f32)
-                        / size as f32;
-                    let py = (y as f32 + (sample_y as f32 + 0.5) / samples as f32)
-                        / size as f32;
+                    let px = (x as f32 + (sample_x as f32 + 0.5) / samples as f32) / size as f32;
+                    let py = (y as f32 + (sample_y as f32 + 0.5) / samples as f32) / size as f32;
 
                     let outer = inside_rounded_rect(px, py, 0.25, 0.04, 0.75, 0.96, 0.23);
                     if !outer {
@@ -54,15 +52,17 @@ pub fn mouse_rgba(size: u32, active: bool) -> Vec<u8> {
                 }
             }
 
-            if covered == 0 {
-                rgba.extend_from_slice(&[0, 0, 0, 0]);
-            } else {
-                rgba.extend_from_slice(&[
-                    (red / covered) as u8,
-                    (green / covered) as u8,
-                    (blue / covered) as u8,
-                    ((covered * 255) / (samples * samples)) as u8,
-                ]);
+            match std::num::NonZeroU32::new(covered) {
+                None => rgba.extend_from_slice(&[0, 0, 0, 0]),
+                Some(covered) => {
+                    let covered = covered.get();
+                    rgba.extend_from_slice(&[
+                        (red / covered) as u8,
+                        (green / covered) as u8,
+                        (blue / covered) as u8,
+                        ((covered * 255) / (samples * samples)) as u8,
+                    ]);
+                }
             }
         }
     }
@@ -102,7 +102,9 @@ mod tests {
     fn active_mouse_icon_is_red() {
         let icon = mouse_rgba(32, true);
         assert!(icon
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .any(|pixel| pixel[3] == 255 && pixel[0] > 200 && pixel[1] < 80));
     }
 }

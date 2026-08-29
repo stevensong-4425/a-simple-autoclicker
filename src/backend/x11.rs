@@ -134,22 +134,33 @@ impl X11Backend {
             (modifiers.super_key, 0xffeb),
         ];
 
+        let mut pressed_modifiers = Vec::new();
         for (enabled, modifier) in modifier_keysyms {
             if enabled {
-                self.key_event(modifier, true)?;
+                if let Err(error) = self.key_event(modifier, true) {
+                    for pressed in pressed_modifiers.into_iter().rev() {
+                        let _ = self.key_event(pressed, false);
+                    }
+                    return Err(error);
+                }
+                pressed_modifiers.push(modifier);
             }
         }
-        self.key_event(keysym, true)?;
-        self.key_event(keysym, false)?;
-        for (enabled, modifier) in modifier_keysyms.into_iter().rev() {
-            if enabled {
-                self.key_event(modifier, false)?;
+
+        let mut result = self
+            .key_event(keysym, true)
+            .and_then(|_| self.key_event(keysym, false));
+        for modifier in pressed_modifiers.into_iter().rev() {
+            if let Err(error) = self.key_event(modifier, false) {
+                if result.is_ok() {
+                    result = Err(error);
+                }
             }
         }
         unsafe {
             (self.flush)(self.display);
         }
-        Ok(())
+        result
     }
 }
 

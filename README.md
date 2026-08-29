@@ -59,12 +59,13 @@ sudo apt remove a-simple-autoclicker
 
 ### Linux
 
-Install the development dependencies:
+Install Rust 1.88 or newer with [rustup](https://rustup.rs/), then install the
+Linux development libraries:
 
 ```bash
 sudo apt update
-sudo apt install build-essential cargo libadwaita-1-dev libgtk-4-dev \
-  libx11-dev libxtst-dev pkg-config rustc
+sudo apt install build-essential libadwaita-1-dev libgtk-4-dev \
+  libx11-dev libxtst-dev pkg-config
 ```
 
 Clone or download this repository, enter its directory, and run:
@@ -100,7 +101,7 @@ under `dist/`:
 
 ```bash
 ./scripts/build-deb.sh
-sudo apt install ./dist/a-simple-autoclicker_0.1.15_amd64.deb
+sudo apt install ./dist/a-simple-autoclicker_0.1.16_amd64.deb
 ```
 
 The script automatically reads the version from `Cargo.toml` and the architecture
