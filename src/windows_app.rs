@@ -44,10 +44,11 @@ const APP_TITLE: &str = "A Simple Autoclicker";
 const BLUE: Color32 = Color32::from_rgb(28, 126, 224);
 const TEXT: Color32 = Color32::from_rgb(48, 48, 48);
 const MUTED: Color32 = Color32::from_rgb(145, 145, 145);
-const DEFAULT_WINDOW_SIZE: [f32; 2] = [390.0, 580.0];
+const DEFAULT_WINDOW_SIZE: [f32; 2] = [390.0, 600.0];
 const CONTENT_MAX_WIDTH: f32 = 350.0;
 const WINDOW_SIDE_MARGIN: f32 = 18.0;
 const START_BUTTON_HEIGHT: f32 = 30.0;
+const BOTTOM_VISIBILITY_ALLOWANCE: f32 = 20.0;
 
 pub fn run() -> Result<(), String> {
     let Some(_single_instance) = acquire_single_instance()? else {
@@ -1365,7 +1366,8 @@ impl Drop for WindowsHotkeyThread {
 mod tests {
     use super::{
         configure_style, duration_ms, format_duration, group_heading, settings_row, split_duration,
-        CONTENT_MAX_WIDTH, DEFAULT_WINDOW_SIZE, START_BUTTON_HEIGHT, WINDOW_SIDE_MARGIN,
+        BOTTOM_VISIBILITY_ALLOWANCE, CONTENT_MAX_WIDTH, DEFAULT_WINDOW_SIZE, START_BUTTON_HEIGHT,
+        WINDOW_SIDE_MARGIN,
     };
 
     #[test]
@@ -1384,7 +1386,10 @@ mod tests {
     fn default_window_fits_one_padded_column() {
         let ratio = DEFAULT_WINDOW_SIZE[0] / DEFAULT_WINDOW_SIZE[1];
         assert!((ratio - 2.0 / 3.0).abs() < 0.02);
-        assert_eq!(DEFAULT_WINDOW_SIZE[1], 550.0 + START_BUTTON_HEIGHT);
+        assert_eq!(
+            DEFAULT_WINDOW_SIZE[1],
+            550.0 + START_BUTTON_HEIGHT + BOTTOM_VISIBILITY_ALLOWANCE
+        );
         assert!(
             DEFAULT_WINDOW_SIZE[0] >= CONTENT_MAX_WIDTH + WINDOW_SIDE_MARGIN * 2.0,
             "default width does not leave the required side padding"
